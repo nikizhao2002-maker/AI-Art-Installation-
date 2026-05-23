@@ -187,7 +187,7 @@ let morphProgress = 0;
 let isBoidsMode = false;
 let textures = [];
 let handData = { detected: false, palmX: 0, palmY: 0, pinchDist: 1.0, isPinching: false, pinchCooldown: 0, fingersUp: 0 };
-// 挥手检测状态（保留用于兜底/调试）
+// 旧版水平切换手势状态（保留占位，主流程已改为仪式手势）
 let swipeState = { lastPalmX: 0, swipeAccum: 0, swipeCooldown: 0 };
 // 张手/握拳散聚状态
 let scatterStrength = 0; // 0=聚拢, 1=最大散开
