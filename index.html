@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>钓一盏鱼灯 - 粒子点云交互</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+
+    <!-- Import Map -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.164.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <!-- MediaPipe -->
+    <script src="https://unpkg.com/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- PeerJS + QRCode for phone connection -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+
+    <!-- 加载界面 -->
+    <div id="loader">
+        <div class="loader-text">钓一盏鱼灯</div>
+        <div class="loader-sub">INITIALIZING PARTICLE SYSTEM...</div>
+    </div>
+
+    <!-- WebGL Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- 手部骨骼绘制层（全屏，叠在3D上） -->
+    <canvas id="hand-skeleton" style="position:fixed;inset:0;z-index:5;pointer-events:none;"></canvas>
+
+    <!-- 摄像头 -->
+    <video id="camera-video" autoplay playsinline style="display:none"></video>
+    <canvas id="camera-canvas"></canvas>
+
+    <!-- 麦克风指示器 -->
+    <div id="mic-indicator" style="display:none; position:fixed; bottom:80px; left:20px; font-size:28px; opacity:0.5; transition: all 0.2s; z-index:15; cursor:pointer;" title="🎤 对着麦克风吹气可触发风效果">🎤</div>
+
+    <!-- 手机连接 QR 码 -->
+    <div id="qr-container" style="display:none; position:fixed; top:20px; left:20px; z-index:20; background:rgba(0,0,0,0.85); padding:12px; border-radius:12px; border:1px solid rgba(200,180,100,0.3);">
+        <div style="color:#e0d0a0; font-size:12px; text-align:center; margin-bottom:6px;">📱 手机扫码连接</div>
+        <canvas id="qr-canvas" style="width:120px; height:120px;"></canvas>
+        <div id="qr-status" style="color:#88aacc; font-size:10px; text-align:center; margin-top:4px;">等待连接...</div>
+        <div style="text-align:center; margin-top:6px;">
+            <button id="qr-close" style="background:none; border:1px solid rgba(200,180,100,0.4); color:#e0d0a0; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:11px;">隐藏</button>
+        </div>
+    </div>
+    <!-- QR 码开关按钮 -->
+    <div id="qr-toggle" style="position:fixed; top:20px; left:20px; z-index:19; font-size:24px; cursor:pointer; opacity:0.7; transition:opacity 0.2s;" title="显示手机连接二维码">📱</div>
+
+    <!-- UI 覆盖层 -->
+    <div id="ui-overlay">
+        <!-- 左下角信息 -->
+        <div class="info-panel">
+            <h1>钓一盏鱼灯</h1>
+            <p class="info-sub">手势交互 · 粒子点云 · 非遗鱼灯</p>
+            <p class="info-hint" id="hint-text">伸出手掌控制旋转 · 捏合缩放 · 空格切换形态</p>
+        </div>
+
+        <!-- 右侧控制面板 -->
+        <div class="control-panel" id="control-panel">
+            <div class="panel-header">
+                <span class="panel-title">控制面板</span>
+                <button class="panel-toggle" id="panel-toggle">◀</button>
+            </div>
+            
+            <div class="panel-body" id="panel-body">
+                <div class="control-group">
+                    <label>粒子大小</label>
+                    <input type="range" id="ctrl-size" min="0.5" max="8" step="0.1" value="2.5">
+                </div>
+                <div class="control-group">
+                    <label>3D 浮雕深度</label>
+                    <input type="range" id="ctrl-relief" min="0" max="80" step="1" value="0">
+                </div>
+                <div class="control-group">
+                    <label>流动扰动</label>
+                    <input type="range" id="ctrl-fluid" min="0" max="5" step="0.1" value="0.0">
+                </div>
+                <div class="control-group">
+                    <label>呼吸幅度</label>
+                    <input type="range" id="ctrl-breath" min="0" max="0.3" step="0.01" value="0.02">
+                </div>
+                <div class="control-group">
+                    <label>背景亮度去除</label>
+                    <input type="range" id="ctrl-threshold" min="0" max="0.95" step="0.01" value="0.85">
+                </div>
+
+                <div class="control-group">
+                    <label>染色叠加</label>
+                    <div class="color-picker-row">
+                        <button class="color-btn active" data-color="none" title="原色">⊘</button>
+                        <button class="color-btn" data-color="#d4af37" title="金色" style="background:#d4af37"></button>
+                        <button class="color-btn" data-color="#ff4444" title="朱红" style="background:#ff4444"></button>
+                        <button class="color-btn" data-color="#4488ff" title="青蓝" style="background:#4488ff"></button>
+                        <button class="color-btn" data-color="#44ffaa" title="翠绿" style="background:#44ffaa"></button>
+                        <button class="color-btn" data-color="#ff88dd" title="霞紫" style="background:#ff88dd"></button>
+                        <input type="color" id="custom-color" value="#ffffff" title="自定义">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>水面色调</label>
+                    <div class="color-picker-row">
+                        <button class="water-color-btn active" data-water="blue" title="深蓝" style="background:linear-gradient(135deg,#0c2340,#1e5080)">🌊</button>
+                        <button class="water-color-btn" data-water="green" title="翠绿" style="background:linear-gradient(135deg,#0a3020,#1a6048)">🌿</button>
+                        <button class="water-color-btn" data-water="silver" title="银白" style="background:linear-gradient(135deg,#2a2a3a,#5a5a7a)">✨</button>
+                        <button class="water-color-btn" data-water="black" title="纯黑" style="background:#000">⚫</button>
+                        <button class="water-color-btn" data-water="transparent" title="透明" style="background:repeating-conic-gradient(#333 0% 25%,#222 0% 50%) 0/12px 12px">▣</button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>形态阶段</label>
+                    <div class="stage-buttons" id="stage-buttons">
+                        <button class="stage-btn active" data-stage="0">活鱼</button>
+                        <button class="stage-btn" data-stage="1">骨架</button>
+                        <button class="stage-btn" data-stage="2">糊纸</button>
+                        <button class="stage-btn" data-stage="3">上色</button>
+                        <button class="stage-btn" data-stage="4">鱼灯</button>
+                        <button class="stage-btn special" data-stage="5">🏮 鱼灯群</button>
+                    </div>
+                </div>
+
+                <div class="control-group gesture-guide">
+                    <label>手势说明</label>
+                    <div class="gesture-list">
+                        <div class="gesture-item">👆 <span>指尖触碰 → 水波纹 · 引鱼</span></div>
+                        <div class="gesture-item">🤏 <span>捏合 → 抓鱼 / 回到水面</span></div>
+                        <div class="gesture-item">👋 <span>左右挥手 → 切换形态(右→/左←)</span></div>
+                        <div class="gesture-item">🖐️ <span>张开手掌 → 粒子/鱼灯散开</span></div>
+                        <div class="gesture-item">✊ <span>握拳 → 粒子吸引跟随 / 鱼灯追随</span></div>
+                        <div class="gesture-item">🖱️ <span>左键旋转 · 右键水波纹</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部阶段指示 -->
+        <div class="stage-indicator" id="stage-indicator">
+            <span class="dot active" data-idx="0" title="水面">💧</span>
+            <span class="dot" data-idx="1" title="钓鱼">🎣</span>
+            <span class="dot" data-idx="2" title="制灯">🏮</span>
+            <span class="dot" data-idx="3" title="放生">🐟</span>
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,292 @@
+/* ══════════════════════════════════════════════
+   钓一盏鱼灯 - 粒子点云交互 样式表
+   ══════════════════════════════════════════════ */
+
+:root {
+    --gold: #d4af37;
+    --dark-gold: #8a6e2f;
+    --ink: #0a0a0f;
+    --glass: rgba(10, 10, 15, 0.82);
+    --glass-border: rgba(212, 175, 55, 0.15);
+    --text: #e8e0d0;
+    --text-dim: rgba(232, 224, 208, 0.5);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body, html {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: var(--ink);
+    font-family: 'Noto Serif SC', serif;
+    color: var(--text);
+    touch-action: none;
+}
+
+/* ── 加载页 ── */
+#loader {
+    position: fixed; inset: 0;
+    background: var(--ink);
+    z-index: 9999;
+    display: flex; flex-direction: column;
+    justify-content: center; align-items: center;
+    transition: opacity 0.8s ease;
+}
+#loader.hidden { opacity: 0; pointer-events: none; }
+.loader-text {
+    font-family: 'Ma Shan Zheng', cursive;
+    font-size: 3rem;
+    color: var(--gold);
+    text-shadow: 0 0 20px rgba(212,175,55,0.4);
+}
+.loader-sub {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 12px;
+    letter-spacing: 3px;
+}
+
+/* ── WebGL 画布容器 ── */
+#canvas-container {
+    position: fixed; inset: 0;
+    z-index: 1;
+}
+
+/* ── 摄像头小窗（右下角可见预览） ── */
+#camera-canvas {
+    position: fixed;
+    bottom: 20px; right: 20px;
+    width: 160px; height: 120px;
+    opacity: 0.75;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.15);
+    pointer-events: none;
+    z-index: 15;
+    transform: scaleX(-1); /* 镜像显示 */
+    box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+}
+
+/* ── UI 覆盖层 ── */
+#ui-overlay {
+    position: fixed; inset: 0;
+    z-index: 10;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+/* ── 左下信息 ── */
+.info-panel {
+    position: absolute;
+    bottom: 150px; left: 40px;
+    pointer-events: none;
+}
+.info-panel h1 {
+    font-family: 'Ma Shan Zheng', cursive;
+    font-size: 2.2rem;
+    color: var(--gold);
+    text-shadow: 0 0 15px rgba(212,175,55,0.3);
+    border-left: 3px solid var(--gold);
+    padding-left: 12px;
+}
+.info-sub {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-top: 6px;
+    padding-left: 16px;
+}
+.info-hint {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 4px;
+    padding-left: 16px;
+    opacity: 0.7;
+}
+
+/* ── 右侧控制面板 (玻璃态) ── */
+.control-panel {
+    position: absolute;
+    top: 20px; right: 20px;
+    width: 240px;
+    background: var(--glass);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: 16px;
+    pointer-events: auto;
+    transition: transform 0.3s ease;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+}
+.control-panel.collapsed {
+    transform: translateX(calc(100% - 52px));
+}
+.control-panel.collapsed .panel-body {
+    display: none !important;
+}
+.control-panel::-webkit-scrollbar { width: 3px; }
+.control-panel::-webkit-scrollbar-thumb { background: var(--dark-gold); border-radius: 2px; }
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.panel-title {
+    font-size: 0.85rem;
+    color: var(--gold);
+    letter-spacing: 1px;
+}
+.panel-toggle {
+    background: none; border: none;
+    color: var(--gold);
+    cursor: pointer;
+    font-size: 0.9rem;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+.panel-toggle:hover { background: rgba(212,175,55,0.15); }
+
+.control-group {
+    margin-bottom: 12px;
+}
+.control-group label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+}
+.control-group input[type="range"] {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    background: rgba(212,175,55,0.2);
+    border-radius: 2px;
+    outline: none;
+}
+.control-group input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--gold);
+    cursor: pointer;
+}
+
+/* 颜色选择器 */
+.color-picker-row {
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+}
+.color-btn {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.1);
+}
+.color-btn:hover { transform: scale(1.2); }
+.color-btn.active { border-color: var(--gold); box-shadow: 0 0 8px rgba(212,175,55,0.5); }
+#custom-color {
+    width: 24px; height: 24px;
+    border: none; border-radius: 50%;
+    cursor: pointer;
+    background: none;
+    padding: 0;
+}
+
+/* 形态按钮 */
+.stage-buttons {
+    display: flex; flex-wrap: wrap; gap: 6px;
+}
+.stage-btn {
+    padding: 4px 10px;
+    font-size: 0.68rem;
+    border: 1px solid var(--glass-border);
+    background: transparent;
+    color: var(--text-dim);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: 'Noto Serif SC', serif;
+}
+.stage-btn:hover { border-color: var(--gold); color: var(--gold); }
+.stage-btn.active { background: rgba(212,175,55,0.2); border-color: var(--gold); color: var(--gold); }
+.stage-btn.special { border-color: rgba(100,200,255,0.3); }
+.stage-btn.special.active { background: rgba(100,200,255,0.15); border-color: #64c8ff; color: #64c8ff; }
+
+/* ── 手势说明 ── */
+.gesture-guide { margin-top: 8px; }
+.gesture-list {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 0.72rem; color: var(--text-dim);
+}
+.gesture-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 0;
+}
+.gesture-item span { opacity: 0.85; }
+
+/* ── 水面色调按钮 ── */
+.water-color-btn {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    border: 2px solid rgba(255,255,255,0.15);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+    transition: border-color 0.3s, transform 0.2s;
+}
+.water-color-btn:hover { border-color: rgba(255,255,255,0.5); transform: scale(1.1); }
+.water-color-btn.active { border-color: var(--gold); box-shadow: 0 0 8px rgba(212,175,55,0.4); }
+
+/* ── 底部进度指示点 ── */
+.stage-indicator {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex; gap: 12px;
+    pointer-events: auto;
+}
+.dot {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.25);
+    cursor: pointer;
+    transition: all 0.3s;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px;
+}
+.dot.active {
+    background: rgba(212,175,55,0.2);
+    border-color: var(--gold);
+    box-shadow: 0 0 12px rgba(212,175,55,0.5);
+    transform: scale(1.2);
+}
+.dot.special {
+    width: auto; height: auto;
+    padding: 2px 6px;
+    border-radius: 8px;
+    font-size: 8px;
+    color: var(--text-dim);
+}
+.dot.special.active {
+    background: rgba(100,200,255,0.3);
+    border-color: #64c8ff;
+    color: #64c8ff;
+    box-shadow: 0 0 10px rgba(100,200,255,0.4);
+}
+
+/* ── 响应式 ── */
+@media (max-width: 768px) {
+    .control-panel { width: 200px; padding: 12px; }
+    .info-panel { bottom: 130px; left: 20px; }
+    .info-panel h1 { font-size: 1.6rem; }
+    #camera-canvas { width: 120px; height: 90px; bottom: 15px; right: 15px; }
+}

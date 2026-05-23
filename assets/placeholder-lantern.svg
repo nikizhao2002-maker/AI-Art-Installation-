@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="500" viewBox="0 0 400 500">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffcc55" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#ff6600" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="400" height="500" fill="#1a1a2e"/>
+  <ellipse cx="200" cy="220" rx="120" ry="160" fill="url(#glow)"/>
+  <ellipse cx="200" cy="220" rx="80" ry="110" fill="none" stroke="#e0a23c" stroke-width="2" stroke-dasharray="8,4"/>
+  <text x="200" y="420" text-anchor="middle" fill="#f4f1e8" font-size="24" font-family="KaiTi">占位鱼灯</text>
+  <text x="200" y="460" text-anchor="middle" fill="#888" font-size="14">请用 Meshy 生成 .glb 模型替换</text>
+</svg>
