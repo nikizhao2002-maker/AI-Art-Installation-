@@ -187,11 +187,90 @@ let morphProgress = 0;
 let isBoidsMode = false;
 let textures = [];
 let handData = { detected: false, palmX: 0, palmY: 0, pinchDist: 1.0, isPinching: false, pinchCooldown: 0, fingersUp: 0 };
-// 挥手检测状态
+// 挥手检测状态（保留用于兜底/调试）
 let swipeState = { lastPalmX: 0, swipeAccum: 0, swipeCooldown: 0 };
 // 张手/握拳散聚状态
 let scatterStrength = 0; // 0=聚拢, 1=最大散开
 let openPalmHoldTime = 0; // 张手保持时间（需>0.5s才触发散开）
+
+// ── 制灯/放生 仪式手势状态机 ──────────────────────────────
+// 每个手势有独立的积累计数器 + 冷却，防止误触
+const RITUAL_COOLDOWN = 90; // 手势触发后冷却帧数（约1.5s@60fps）
+let ritualCooldown = 0;     // 全局冷却（触发任意手势后锁定）
+
+// 手势1：双手向两侧推开 → 活鱼→骨架（stage 0→1）
+// 检测：同时检测到两只手，且两手腕X距离持续扩大
+let spreadGesture = { prevDist: 0, accumDelta: 0 };
+
+// 手势2：单手从左到右缓慢抹过 → 骨架→糊纸（stage 1→2）
+// 检测：手腕X从负到正持续移动，速度慢（仪式感）
+let wipeGesture = { startX: null, traveling: false, accumX: 0 };
+
+// 手势3：握拳→张开 → 糊纸→上色（stage 2→3）
+// 检测：fingersUp从≤1升到≥4
+let bloomGesture = { wasFist: false, holdFistTime: 0 };
+
+// 手势4：双手靠近→向上托起 → 上色→鱼灯（stage 3→4）
+// 检测：两手腕距离接近（<0.28）且双手整体上移
+let liftGesture = { wasClose: false, closeTime: 0, startY: null, riseAccum: 0 };
+
+// 放生手势：张开五指向前推→手腕持续上移 → 放生完成
+// 检测：fingersUp=5 保持 + palmY持续减小（上移）
+let releaseGesture = { openTime: 0, startY: null, riseAccum: 0 };
+
+// 手势提示文字映射
+const GESTURE_HINTS = {
+    0: '双手张开向两侧推 · 展开竹骨架',
+    1: '单手从左向右缓慢抹过 · 糊上竹纸',
+    2: '握拳，感受墨色，再缓缓张开',
+    3: '双手靠近，向上托起 · 点亮鱼灯',
+    4: '张开手掌引导鱼群 · 向上抬手放生',
+};
+const RITUAL_CUES = {
+    water: {
+        gesture: 'release',
+        kicker: '入场',
+        title: '伸手触碰水面',
+        subtitle: '用指尖制造水波，停留片刻或捏合进入钓鱼。',
+    },
+    fishing: {
+        gesture: 'wipe',
+        kicker: '钓鱼',
+        title: '慢慢靠近鱼影',
+        subtitle: '手掌引鱼靠近，鱼浮起后捏合抓住它。',
+    },
+    0: {
+        gesture: 'spread',
+        kicker: '制灯 1/5',
+        title: '双手向两侧推开',
+        subtitle: '像撑开竹篾一样，让鱼的骨架展开。',
+    },
+    1: {
+        gesture: 'wipe',
+        kicker: '制灯 2/5',
+        title: '单手从左向右抹过',
+        subtitle: '像把纸面覆上鱼身，动作要平稳。',
+    },
+    2: {
+        gesture: 'bloom',
+        kicker: '制灯 3/5',
+        title: '先握拳，再缓缓张开',
+        subtitle: '让颜色从掌心散开，点染鱼鳞。',
+        hands: ['✊', '✋'],
+    },
+    3: {
+        gesture: 'lift',
+        kicker: '制灯 4/5',
+        title: '两手张开，靠拢向上托',
+        subtitle: '像把鱼灯捧起来：双手从两侧靠近，然后一起上抬。',
+    },
+    4: {
+        gesture: 'release',
+        kicker: '完成',
+        title: '张开手掌向上抬',
+        subtitle: '把鱼灯送回水面，完成放生。',
+    },
+};
 // 麦克风/吹气检测
 let micAnalyser = null;
 let micDataArray = null;
@@ -649,7 +728,8 @@ function enterBoidsMode() {
         currentPhase = PHASES.RELEASE;
         updatePhaseIndicator();
     }
-    document.getElementById('hint-text').textContent = '🏮 鱼灯群 · 手掌引导游动 · 挥手返回';
+    document.getElementById('hint-text').textContent = GESTURE_HINTS[4];
+    updateRitualCue(4);
 }
 
 function exitBoidsMode() {
@@ -661,13 +741,82 @@ function exitBoidsMode() {
         currentPhase = PHASES.CRAFTING;
         updatePhaseIndicator();
     }
-    document.getElementById('hint-text').textContent = '左右挥手切换形态';
+    document.getElementById('hint-text').textContent = GESTURE_HINTS[currentStage] || GESTURE_HINTS[0];
+    updateRitualCue(currentStage);
 }
 
-function nextStage() {
-    const total = STAGES.length + 1; // +1 for boids
-    const next = (currentStage + 1) % total;
-    switchToStage(next);
+/**
+ * 仪式手势触发：切换到指定stage，或执行放生
+ * @param {number|string} target - stage序号(1-4) 或 'release'
+ */
+function triggerRitualGesture(target) {
+    if (target === 'release') {
+        ritualCooldown = RITUAL_COOLDOWN;
+        currentStage = 0;
+        isBoidsMode = false;
+        if (particleSystem) particleSystem.visible = false;
+        if (boidsGroup) boidsGroup.visible = false;
+        if (uniforms && textures[0]) {
+            uniforms.uTexA.value = textures[0];
+            uniforms.uTexB.value = textures[0];
+            uniforms.uMorph.value = 0.0;
+        }
+        updateUI();
+        updateGestureProgress(0);
+        enterPhase(PHASES.WATER);
+        const hintEl = document.getElementById('hint-text');
+        if (hintEl) hintEl.textContent = '🏮 鱼灯已放生，回归水面...';
+        return;
+    }
+
+    // 只允许顺序推进（防止跳跃）
+    if (target !== currentStage + 1) return;
+    ritualCooldown = RITUAL_COOLDOWN;
+
+    // 视觉反馈：短暂光晕闪烁
+    const flash = document.createElement('div');
+    flash.style.cssText = `
+        position:fixed;inset:0;pointer-events:none;z-index:9999;
+        background:radial-gradient(circle, rgba(255,240,200,0.18) 0%, transparent 70%);
+        transition: opacity 0.6s ease-out; opacity:1;
+    `;
+    document.body.appendChild(flash);
+    requestAnimationFrame(() => { flash.style.opacity = '0'; });
+    setTimeout(() => flash.remove(), 700);
+
+    switchToStage(target);
+
+    const hintEl = document.getElementById('hint-text');
+    const stageNames = ['', '骨架已展开', '竹纸已糊上', '色彩已点染', '🏮 鱼灯亮了！'];
+    if (hintEl && stageNames[target]) hintEl.textContent = stageNames[target];
+
+    updateGestureProgress(target);
+    updateRitualCue(target);
+}
+
+function updateGestureProgress(stage) {
+    document.querySelectorAll('.gesture-step').forEach((el, i) => {
+        el.classList.toggle('done', i <= stage);
+    });
+}
+
+function updateRitualCue(key, forceShow = true) {
+    const cue = RITUAL_CUES[key];
+    const root = document.getElementById('ritual-cue');
+    if (!root || !cue) return;
+
+    const kicker = document.getElementById('ritual-kicker');
+    const title = document.getElementById('ritual-title');
+    const subtitle = document.getElementById('ritual-subtitle');
+    const leftHand = document.querySelector('#ritual-gesture .hand-left');
+    const rightHand = document.querySelector('#ritual-gesture .hand-right');
+    if (kicker) kicker.textContent = cue.kicker;
+    if (title) title.textContent = cue.title;
+    if (subtitle) subtitle.textContent = cue.subtitle;
+    if (leftHand) leftHand.textContent = cue.hands?.[0] || '✋';
+    if (rightHand) rightHand.textContent = cue.hands?.[1] || '✋';
+    root.dataset.gesture = cue.gesture;
+    root.classList.toggle('is-hidden', !forceShow);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -693,10 +842,12 @@ function enterPhase(phase) {
             if (boidsGroup) boidsGroup.visible = false;
             if (panelBody) panelBody.style.display = 'none';
             if (hintEl) hintEl.textContent = '用指尖触碰水面...';
+            updateRitualCue('water');
             controls.autoRotate = false;
             fishShadowOpacity = 0;
             fishAttracted = false;
             fishAttractionTimer = 0;
+            { const gp = document.getElementById('gesture-progress'); if (gp) gp.style.display = 'none'; }
             break;
             
         case PHASES.FISHING:
@@ -710,6 +861,7 @@ function enterPhase(phase) {
             fishEmergProgress = 0;
             fishAttracted = false;
             if (hintEl) hintEl.textContent = '水下有鱼影在游动...';
+            updateRitualCue('fishing');
             break;
             
         case PHASES.CRAFTING:
@@ -726,8 +878,12 @@ function enterPhase(phase) {
             if (boidsGroup) boidsGroup.visible = false;
             isBoidsMode = false;
             if (panelBody) panelBody.style.display = '';
-            if (hintEl) hintEl.textContent = '左右挥手切换形态';
+            if (hintEl) hintEl.textContent = GESTURE_HINTS[0];
+            updateRitualCue(0);
             controls.autoRotate = true;
+            // 显示制灯进度指示器
+            { const gp = document.getElementById('gesture-progress'); if (gp) gp.style.display = 'flex'; }
+            updateGestureProgress(0);
             break;
             
         case PHASES.RELEASE:
@@ -737,6 +893,7 @@ function enterPhase(phase) {
             isBoidsMode = true;
             if (panelBody) panelBody.style.display = '';
             if (hintEl) hintEl.textContent = '🏮 鱼灯群放生 · 张开手掌引导游动';
+            updateRitualCue(4);
             break;
     }
     
@@ -872,31 +1029,185 @@ function setupMediaPipe() {
                 handData.palmX = landmarks[0].x - 0.5;  // -0.5~0.5
                 handData.palmY = landmarks[0].y - 0.5;
 
-                // 挥手检测（制灯阶段用于切换形态）
-                if (swipeState.swipeCooldown > 0) {
-                    swipeState.swipeCooldown--;
-                } else if ((currentPhase === PHASES.CRAFTING || currentPhase === PHASES.RELEASE) && !isMorphing) {
-                    const dx = handData.palmX - swipeState.lastPalmX;
-                    const dy = handData.palmY - (swipeState.lastPalmY || handData.palmY);
-                    // 防误触：方向锁 + 速度门槛（降低触发难度）
-                    const isFastHorizontal = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 0.01;
-                    if (isFastHorizontal) {
-                        swipeState.swipeAccum += dx;
+                const allLandmarks = results.multiHandLandmarks;
+                const twoHands = allLandmarks.length >= 2;
+                const hand0 = allLandmarks[0];
+                const hand1 = twoHands ? allLandmarks[1] : null;
+
+                // 手指伸展计数（判断张手/握拳），需先于仪式手势检测更新
+                {
+                    let fingersUp = 0;
+                    // 拇指：指尖x超过指根x（考虑左右手差异，用距手腕的距离判断）
+                    const thumbTip = landmarks[4], thumbIP = landmarks[3];
+                    const wristX = landmarks[0].x;
+                    if (Math.abs(thumbTip.x - wristX) > Math.abs(thumbIP.x - wristX)) fingersUp++;
+                    // 其他4指：指尖y < 近指节y（相对手掌方向）
+                    if (landmarks[8].y < landmarks[6].y) fingersUp++;   // 食指
+                    if (landmarks[12].y < landmarks[10].y) fingersUp++; // 中指
+                    if (landmarks[16].y < landmarks[14].y) fingersUp++; // 无名指
+                    if (landmarks[20].y < landmarks[18].y) fingersUp++; // 小指
+                    handData.fingersUp = fingersUp;
+                }
+
+                // ── 仪式手势检测（制灯/放生阶段）────────────────────
+                if (ritualCooldown > 0) ritualCooldown--;
+
+                // 更新第二只手骨骼绘制（已在外层处理）
+
+                if (currentPhase === PHASES.CRAFTING && !isMorphing && ritualCooldown === 0) {
+
+                    // ── 手势1：双手向两侧推开 → stage 0→1（活鱼→骨架）──
+                    if (currentStage === 0) {
+                        if (twoHands) {
+                            const x0 = hand0[0].x, x1 = hand1[0].x;
+                            const dist = Math.abs(x0 - x1);
+                            const delta = dist - spreadGesture.prevDist;
+                            if (delta > 0.002) { // 持续扩大
+                                spreadGesture.accumDelta += delta;
+                            } else {
+                                spreadGesture.accumDelta = Math.max(0, spreadGesture.accumDelta - 0.005);
+                            }
+                            spreadGesture.prevDist = dist;
+                            if (spreadGesture.accumDelta > 0.12) {
+                                triggerRitualGesture(1);
+                                spreadGesture.accumDelta = 0;
+                            }
+                        } else {
+                            spreadGesture.accumDelta = Math.max(0, spreadGesture.accumDelta - 0.01);
+                        }
                     }
-                    if (swipeState.swipeAccum < -0.15) {
-                        nextStage();
-                        swipeState.swipeAccum = 0;
-                        swipeState.swipeCooldown = 30;
-                    } else if (swipeState.swipeAccum > 0.15) {
-                        const total = STAGES.length + 1;
-                        const prev = (currentStage - 1 + total) % total;
-                        switchToStage(prev);
-                        swipeState.swipeAccum = 0;
-                        swipeState.swipeCooldown = 30;
+
+                    // ── 手势2：单手从左到右缓慢抹过 → stage 1→2（骨架→糊纸）──
+                    if (currentStage === 1) {
+                        const px = handData.palmX; // -0.5~0.5
+                        if (!wipeGesture.traveling && px < -0.2) {
+                            // 手在左侧，开始抹
+                            wipeGesture.traveling = true;
+                            wipeGesture.startX = px;
+                            wipeGesture.accumX = 0;
+                        }
+                        if (wipeGesture.traveling) {
+                            const dx = px - (wipeGesture.startX + wipeGesture.accumX);
+                            if (dx > 0) wipeGesture.accumX += dx; // 只累计向右的位移
+                            if (wipeGesture.accumX > 0.35) {
+                                triggerRitualGesture(2);
+                                wipeGesture.traveling = false;
+                                wipeGesture.accumX = 0;
+                                wipeGesture.startX = null;
+                            }
+                        }
+                        // 手移回左侧重置
+                        if (px < -0.25) {
+                            wipeGesture.traveling = false;
+                            wipeGesture.accumX = 0;
+                        }
+                    }
+
+                    // ── 手势3：握拳→张开 → stage 2→3（糊纸→上色）──
+                    if (currentStage === 2) {
+                        const fu = handData.fingersUp;
+                        if (fu <= 1) {
+                            bloomGesture.holdFistTime++;
+                        } else {
+                            if (bloomGesture.holdFistTime > 0) bloomGesture.holdFistTime--;
+                        }
+                        if (bloomGesture.holdFistTime > 20) {
+                            bloomGesture.wasFist = true;
+                        }
+                        if (bloomGesture.wasFist && fu >= 4) {
+                            triggerRitualGesture(3);
+                            bloomGesture.wasFist = false;
+                            bloomGesture.holdFistTime = 0;
+                        }
+                    }
+
+                    // ── 手势4：双手靠近→向上托起 → stage 3→4（上色→鱼灯）──
+                    if (currentStage === 3) {
+                        if (twoHands) {
+                            const x0 = hand0[0].x, x1 = hand1[0].x;
+                            const y0 = hand0[0].y, y1 = hand1[0].y;
+                            const hdist = Math.abs(x0 - x1);
+                            const avgY = (y0 + y1) / 2;
+                            if (hdist < 0.28) {
+                                liftGesture.closeTime++;
+                                if (liftGesture.closeTime > 6 && !liftGesture.wasClose) {
+                                    liftGesture.wasClose = true;
+                                    liftGesture.startY = avgY;
+                                    liftGesture.riseAccum = 0;
+                                }
+                                if (liftGesture.wasClose && liftGesture.startY !== null) {
+                                    const rise = liftGesture.startY - avgY; // Y减小=向上
+                                    if (rise > liftGesture.riseAccum) liftGesture.riseAccum = rise;
+                                    if (liftGesture.riseAccum > 0.08) {
+                                        triggerRitualGesture(4);
+                                        liftGesture.wasClose = false;
+                                        liftGesture.closeTime = 0;
+                                        liftGesture.startY = null;
+                                        liftGesture.riseAccum = 0;
+                                    }
+                                }
+                            } else {
+                                liftGesture.closeTime = Math.max(0, liftGesture.closeTime - 2);
+                                if (liftGesture.closeTime === 0) {
+                                    liftGesture.wasClose = false;
+                                    liftGesture.startY = null;
+                                    liftGesture.riseAccum = 0;
+                                }
+                            }
+                        } else {
+                            liftGesture.closeTime = 0;
+                            liftGesture.wasClose = false;
+                            liftGesture.startY = null;
+                            liftGesture.riseAccum = 0;
+                        }
                     }
                 }
-                swipeState.lastPalmX = handData.palmX;
-                swipeState.lastPalmY = handData.palmY;
+
+                // ── 放生手势：张开五指+手腕上移 → 放生完成 ──
+                if (
+                    ritualCooldown === 0 &&
+                    (
+                        currentPhase === PHASES.RELEASE ||
+                        (currentPhase === PHASES.CRAFTING && currentStage === 4)
+                    )
+                ) {
+                    const fu = handData.fingersUp;
+                    const py = handData.palmY; // -0.5~0.5，负=上方
+                    if (fu >= 4) {
+                        releaseGesture.openTime++;
+                        if (releaseGesture.openTime > 8 && releaseGesture.startY === null) {
+                            releaseGesture.startY = py;
+                            releaseGesture.riseAccum = 0;
+                        }
+                        if (releaseGesture.startY !== null) {
+                            const rise = releaseGesture.startY - py; // palmY减小=手上移
+                            if (rise > releaseGesture.riseAccum) releaseGesture.riseAccum = rise;
+                            if (releaseGesture.riseAccum > 0.08) {
+                                triggerRitualGesture('release');
+                                releaseGesture.openTime = 0;
+                                releaseGesture.startY = null;
+                                releaseGesture.riseAccum = 0;
+                            }
+                        }
+                    } else {
+                        releaseGesture.openTime = Math.max(0, releaseGesture.openTime - 2);
+                        if (releaseGesture.openTime === 0) {
+                            releaseGesture.startY = null;
+                            releaseGesture.riseAccum = 0;
+                        }
+                    }
+                }
+
+                // ── 更新提示文字 ──
+                if (currentPhase === PHASES.CRAFTING && !isMorphing) {
+                    const hint = GESTURE_HINTS[currentStage] || '';
+                    const hintEl = document.getElementById('hint-text');
+                    if (hintEl && hint) hintEl.textContent = hint;
+                }
+                if (currentPhase === PHASES.RELEASE) {
+                    const hintEl = document.getElementById('hint-text');
+                    if (hintEl) hintEl.textContent = GESTURE_HINTS[4];
+                }
 
                 // 在全屏画布上绘制骨骼（镜像翻转）
                 drawHandSkeleton(skelCtx, landmarks, skelCanvas.width, skelCanvas.height);
@@ -915,21 +1226,6 @@ function setupMediaPipe() {
                 // 如果有第二只手
                 if (results.multiHandLandmarks.length > 1) {
                     drawHandSkeleton(skelCtx, results.multiHandLandmarks[1], skelCanvas.width, skelCanvas.height);
-                }
-
-                // 手指伸展计数（判断张手/握拳）
-                {
-                    let fingersUp = 0;
-                    // 拇指：指尖x超过指根x（考虑左右手差异，用距手腕的距离判断）
-                    const thumbTip = landmarks[4], thumbIP = landmarks[3];
-                    const wristX = landmarks[0].x;
-                    if (Math.abs(thumbTip.x - wristX) > Math.abs(thumbIP.x - wristX)) fingersUp++;
-                    // 其他4指：指尖y < 近指节y（相对手掌方向）
-                    if (landmarks[8].y < landmarks[6].y) fingersUp++;   // 食指
-                    if (landmarks[12].y < landmarks[10].y) fingersUp++; // 中指
-                    if (landmarks[16].y < landmarks[14].y) fingersUp++; // 无名指
-                    if (landmarks[20].y < landmarks[18].y) fingersUp++; // 小指
-                    handData.fingersUp = fingersUp;
                 }
 
                 // 捏合检测 (拇指4 vs 食指8) - 增大阈值防止误触
@@ -953,7 +1249,7 @@ function setupMediaPipe() {
                         } else if (currentPhase === PHASES.RELEASE) {
                             advancePhase(); // 捏合 → 回到水面
                         }
-                        // CRAFTING阶段: 捏合不触发阶段切换（挥手切形态，Yes手势进鱼群）
+                        // CRAFTING阶段: 捏合不触发阶段切换，形态推进交给仪式手势
                     }
                 } else if (dist > 0.08) {
                     handData.isPinching = false;
@@ -1157,12 +1453,11 @@ function handlePhoneData(data) {
                 else if (currentPhase === PHASES.FISHING) advancePhase();
                 else if (currentPhase === PHASES.RELEASE) advancePhase();
                 setTimeout(() => { handData.isPinching = false; }, 300);
-            } else if (data.gesture === 'swipe-left') {
-                const total = STAGES.length + 1;
-                const prev = (currentStage - 1 + total) % total;
-                switchToStage(prev);
-            } else if (data.gesture === 'swipe-right') {
-                nextStage();
+            } else if (data.gesture === 'ritual-next') {
+                if (currentPhase === PHASES.CRAFTING) {
+                    if (currentStage < STAGES.length - 1) triggerRitualGesture(currentStage + 1);
+                    else triggerRitualGesture('release');
+                }
             }
             break;
             
@@ -1261,10 +1556,7 @@ function updateUI() {
     document.querySelectorAll('.stage-btn').forEach(btn => {
         btn.classList.toggle('active', parseInt(btn.getAttribute('data-stage')) === currentStage);
     });
-    // 底部圆点
-    document.querySelectorAll('.dot').forEach(dot => {
-        dot.classList.toggle('active', parseInt(dot.getAttribute('data-idx')) === currentStage);
-    });
+    updatePhaseIndicator();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1278,7 +1570,11 @@ function onKeyDown(e) {
         } else if (currentPhase === PHASES.FISHING) {
             advancePhase(); // 抓住鱼 → 制灯
         } else if (currentPhase === PHASES.CRAFTING) {
-            nextStage(); // 切换形态
+            if (currentStage < STAGES.length - 1) {
+                triggerRitualGesture(currentStage + 1); // 调试兜底：按顺序模拟仪式完成
+            } else {
+                triggerRitualGesture('release');
+            }
         } else if (currentPhase === PHASES.RELEASE) {
             advancePhase(); // 回到水面
         }

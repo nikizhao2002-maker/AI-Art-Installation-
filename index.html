@@ -64,6 +64,20 @@
 
     <!-- UI 覆盖层 -->
     <div id="ui-overlay">
+        <!-- 顶部仪式手势提示 -->
+        <div id="ritual-cue" class="ritual-cue is-hidden" aria-live="polite">
+            <div class="ritual-copy">
+                <div class="ritual-kicker" id="ritual-kicker">下一步手势</div>
+                <div class="ritual-title" id="ritual-title">伸出手掌，唤醒水面</div>
+                <div class="ritual-subtitle" id="ritual-subtitle">动作放慢一点，系统会跟随你的手势。</div>
+            </div>
+            <div class="ritual-gesture" id="ritual-gesture" aria-hidden="true">
+                <span class="hand hand-left">✋</span>
+                <span class="hand hand-right">✋</span>
+                <span class="motion-line"></span>
+            </div>
+        </div>
+
         <!-- 左下角信息 -->
         <div class="info-panel">
             <h1>钓一盏鱼灯</h1>
@@ -141,13 +155,24 @@
                     <div class="gesture-list">
                         <div class="gesture-item">👆 <span>指尖触碰 → 水波纹 · 引鱼</span></div>
                         <div class="gesture-item">🤏 <span>捏合 → 抓鱼 / 回到水面</span></div>
-                        <div class="gesture-item">👋 <span>左右挥手 → 切换形态(右→/左←)</span></div>
-                        <div class="gesture-item">🖐️ <span>张开手掌 → 粒子/鱼灯散开</span></div>
-                        <div class="gesture-item">✊ <span>握拳 → 粒子吸引跟随 / 鱼灯追随</span></div>
+                        <div class="gesture-item">↔ <span>双手推开 → 展开竹骨</span></div>
+                        <div class="gesture-item">☞ <span>左至右抹过 → 糊纸覆面</span></div>
+                        <div class="gesture-item">✊ <span>握拳再张开 → 着色描鳞</span></div>
+                        <div class="gesture-item">🙏 <span>合十上托 → 点亮鱼灯</span></div>
+                        <div class="gesture-item">🖐️ <span>张手上抬 → 放生回水面</span></div>
                         <div class="gesture-item">🖱️ <span>左键旋转 · 右键水波纹</span></div>
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- 制灯阶段进度指示（仅CRAFTING阶段显示） -->
+        <div id="gesture-progress" style="display:none;">
+            <div class="gesture-step" data-step="0" title="活鱼"></div>
+            <div class="gesture-step" data-step="1" title="骨架"></div>
+            <div class="gesture-step" data-step="2" title="糊纸"></div>
+            <div class="gesture-step" data-step="3" title="上色"></div>
+            <div class="gesture-step" data-step="4" title="鱼灯"></div>
         </div>
 
         <!-- 底部阶段指示 -->

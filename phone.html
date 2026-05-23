@@ -92,8 +92,7 @@
     
     <div class="btn-row">
         <div class="btn" id="btn-pinch">🤏 捏合</div>
-        <div class="btn" id="btn-swipe-left">👈</div>
-        <div class="btn" id="btn-swipe-right">👉</div>
+        <div class="btn" id="btn-ritual-next">仪式完成</div>
         <div class="btn" id="btn-fist">✊</div>
         <div class="btn" id="btn-palm">🖐️</div>
     </div>
@@ -193,13 +192,9 @@
             e.preventDefault();
             send({ type: 'gesture', gesture: 'pinch' });
         });
-        document.getElementById('btn-swipe-left').addEventListener('touchstart', (e) => {
+        document.getElementById('btn-ritual-next').addEventListener('touchstart', (e) => {
             e.preventDefault();
-            send({ type: 'gesture', gesture: 'swipe-left' });
-        });
-        document.getElementById('btn-swipe-right').addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            send({ type: 'gesture', gesture: 'swipe-right' });
+            send({ type: 'gesture', gesture: 'ritual-next' });
         });
         document.getElementById('btn-fist').addEventListener('touchstart', (e) => {
             e.preventDefault();
