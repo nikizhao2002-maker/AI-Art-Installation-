@@ -93,7 +93,7 @@
             </div>
             
             <div class="panel-body" id="panel-body">
-                <div class="control-group">
+                <div class="control-group timeout-group">
                     <label>粒子大小</label>
                     <input type="range" id="ctrl-size" min="0.5" max="8" step="0.1" value="2.5">
                 </div>
@@ -112,6 +112,40 @@
                 <div class="control-group">
                     <label>背景亮度去除</label>
                     <input type="range" id="ctrl-threshold" min="0" max="0.95" step="0.01" value="0.85">
+                </div>
+
+                <div class="control-group">
+                    <div class="control-group-header">
+                        <label>手势超时 (秒)</label>
+                        <button class="reset-btn" id="reset-defaults">重置默认值</button>
+                    </div>
+                    <div class="timeout-grid">
+                        <div class="timeout-item">
+                            <span class="timeout-label">展开骨架</span>
+                            <input type="range" id="ctrl-timeout-0" min="6" max="30" step="1" value="12">
+                            <span class="timeout-value" id="timeout-val-0">12s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">糊纸覆面</span>
+                            <input type="range" id="ctrl-timeout-1" min="6" max="30" step="1" value="15">
+                            <span class="timeout-value" id="timeout-val-1">15s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">着色描鳞</span>
+                            <input type="range" id="ctrl-timeout-2" min="6" max="30" step="1" value="18">
+                            <span class="timeout-value" id="timeout-val-2">18s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">点亮鱼灯</span>
+                            <input type="range" id="ctrl-timeout-3" min="6" max="30" step="1" value="18">
+                            <span class="timeout-value" id="timeout-val-3">18s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">放生回水</span>
+                            <input type="range" id="ctrl-timeout-4" min="6" max="30" step="1" value="15">
+                            <span class="timeout-value" id="timeout-val-4">15s</span>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="control-group">

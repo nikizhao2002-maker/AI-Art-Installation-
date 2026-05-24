@@ -239,6 +239,51 @@ body, html {
 .control-panel.collapsed {
     transform: translateX(calc(100% - 52px));
 }
+
+.timeout-grid {
+    display: grid;
+    gap: 14px;
+}
+.timeout-item {
+    display: grid;
+    grid-template-columns: 66px 1fr 36px;
+    align-items: center;
+    gap: 6px;
+}
+.timeout-label {
+    font-size: 0.64rem;
+    color: rgba(232,224,208,0.55);
+    letter-spacing: 1px;
+}
+.timeout-value {
+    font-size: 0.7rem;
+    color: rgba(212,175,55,0.9);
+    text-align: right;
+}
+.timeout-item input[type="range"] {
+    width: 100%;
+}
+.control-actions {
+    margin-top: 10px;
+    display: flex;
+    justify-content: flex-end;
+}
+.reset-btn {
+    background: rgba(212,175,55,0.06);
+    border: 1px solid rgba(212,175,55,0.2);
+    color: rgba(232,224,208,0.65);
+    font-size: 0.68rem;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: 'Noto Serif SC', serif;
+}
+.reset-btn:hover {
+    border-color: rgba(212,175,55,0.45);
+    color: rgba(255,246,216,0.9);
+    background: rgba(212,175,55,0.12);
+}
 .control-panel.collapsed .panel-body {
     display: none !important;
 }
@@ -268,13 +313,27 @@ body, html {
 .panel-toggle:hover { background: rgba(212,175,55,0.15); }
 
 .control-group {
-    margin-bottom: 12px;
+    margin-bottom: 18px;
+}
+.control-group.timeout-group {
+    margin-top: 0;
+    margin-bottom: 18px;
 }
 .control-group label {
     display: block;
     font-size: 0.7rem;
     color: var(--text-dim);
     margin-bottom: 4px;
+}
+.control-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 2px;
+}
+.control-group-header label {
+    margin-bottom: 0;
 }
 .control-group input[type="range"] {
     width: 100%;
