@@ -19,7 +19,6 @@ const CONFIG = {
     morphDuration: 1.5,       // 形态切换秒数
     boidsCount: 600,          // 鱼群数量
     finalModelUrl: 'assets/models/浮金鱼影tripo.glb',
-    finalPointCount: 42000,
 };
 
 const DEFAULTS = {
@@ -798,8 +797,8 @@ function updateBoids(target, mode = 'follow') {
 function loadFinalModel() {
     const loader = new GLTFLoader();
     loader.load(CONFIG.finalModelUrl, (gltf) => {
-        finalModel = createPointCloudFromGLB(gltf.scene);
-        finalModel.name = '浮金鱼影终局点云';
+        finalModel = gltf.scene;
+        finalModel.name = '浮金鱼影终局模型';
         finalModel.visible = false;
 
         const box = new THREE.Box3().setFromObject(finalModel);
@@ -811,6 +810,21 @@ function loadFinalModel() {
         finalModel.position.sub(center);
         finalModel.scale.setScalar(scale);
         finalModel.rotation.set(0.08, -1.45, 0.03);
+        finalModel.traverse((obj) => {
+            if (!obj.isMesh) return;
+            obj.castShadow = false;
+            obj.receiveShadow = false;
+            if (obj.material) {
+                const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+                materials.forEach((mat) => {
+                    mat.side = THREE.DoubleSide;
+                    if ('roughness' in mat) mat.roughness = Math.min(mat.roughness ?? 0.55, 0.62);
+                    if ('metalness' in mat) mat.metalness = Math.max(mat.metalness ?? 0, 0.02);
+                    mat.needsUpdate = true;
+                });
+            }
+        });
+
         scene.add(finalModel);
         if (isFinalModelVisible) showFinalModel();
 
@@ -818,107 +832,10 @@ function loadFinalModel() {
             finalModelMixer = new THREE.AnimationMixer(finalModel);
             gltf.animations.forEach((clip) => finalModelMixer.clipAction(clip).play());
         }
-        console.log('[INFO] 终局 3D 点云加载完成: 浮金鱼影');
+        console.log('[INFO] 终局 3D 模型加载完成: 浮金鱼影');
     }, undefined, (err) => {
-        console.warn('[WARN] 终局 3D 点云加载失败:', CONFIG.finalModelUrl, err);
+        console.warn('[WARN] 终局 3D 模型加载失败:', CONFIG.finalModelUrl, err);
     });
-}
-
-function createPointCloudFromGLB(root) {
-    const sourcePoints = [];
-    const sourceColors = [];
-    const tempColor = new THREE.Color();
-
-    root.updateMatrixWorld(true);
-    root.traverse((obj) => {
-        if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
-
-        const position = obj.geometry.attributes.position;
-        const colorAttr = obj.geometry.attributes.color;
-        const materialColor = obj.material?.color || tempColor.set(0xf0b35f);
-        const vertex = new THREE.Vector3();
-        const color = new THREE.Color();
-        const stride = Math.max(1, Math.floor(position.count / 6000));
-
-        for (let i = 0; i < position.count; i += stride) {
-            vertex.fromBufferAttribute(position, i).applyMatrix4(obj.matrixWorld);
-            sourcePoints.push(vertex.x, vertex.y, vertex.z);
-
-            if (colorAttr) {
-                color.fromBufferAttribute(colorAttr, i);
-            } else {
-                color.copy(materialColor);
-            }
-            sourceColors.push(color.r, color.g, color.b);
-        }
-    });
-
-    if (sourcePoints.length === 0) {
-        const fallback = new THREE.Group();
-        const geo = new THREE.SphereGeometry(1, 24, 16);
-        fallback.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xf0b35f, size: 2 })));
-        return fallback;
-    }
-
-    const pointCount = CONFIG.finalPointCount;
-    const positions = new Float32Array(pointCount * 3);
-    const colors = new Float32Array(pointCount * 3);
-    const baseCount = sourcePoints.length / 3;
-    const center = new THREE.Vector3();
-    const min = new THREE.Vector3(Infinity, Infinity, Infinity);
-    const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-
-    for (let i = 0; i < baseCount; i++) {
-        const x = sourcePoints[i * 3];
-        const y = sourcePoints[i * 3 + 1];
-        const z = sourcePoints[i * 3 + 2];
-        center.x += x;
-        center.y += y;
-        center.z += z;
-        min.min(new THREE.Vector3(x, y, z));
-        max.max(new THREE.Vector3(x, y, z));
-    }
-    center.divideScalar(baseCount);
-    const span = max.clone().sub(min);
-
-    for (let i = 0; i < pointCount; i++) {
-        const idx = Math.floor(Math.random() * baseCount);
-        const sx = sourcePoints[idx * 3];
-        const sy = sourcePoints[idx * 3 + 1];
-        const sz = sourcePoints[idx * 3 + 2];
-        const jitter = 0.004 + Math.random() * 0.012;
-
-        positions[i * 3] = sx + (Math.random() - 0.5) * jitter;
-        positions[i * 3 + 1] = sy + (Math.random() - 0.5) * jitter;
-        positions[i * 3 + 2] = sz + (Math.random() - 0.5) * jitter;
-
-        const nx = span.x ? (sx - min.x) / span.x : 0.5;
-        const ny = span.y ? (sy - min.y) / span.y : 0.5;
-        const teal = Math.max(0, Math.sin(nx * 10.0 + ny * 4.0)) * 0.34;
-        const ember = 0.75 + Math.random() * 0.25;
-        const edgeGlow = 0.78 + Math.abs(ny - 0.5) * 0.42;
-
-        colors[i * 3] = Math.min((0.95 - teal * 0.48) * ember * edgeGlow, 1);
-        colors[i * 3 + 1] = Math.min((0.42 + ny * 0.32 + teal * 0.38) * ember, 1);
-        colors[i * 3 + 2] = Math.min((0.12 + teal * 0.72 + Math.random() * 0.08) * ember, 1);
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.computeBoundingSphere();
-
-    const material = new THREE.PointsMaterial({
-        size: 1.15,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.82,
-        blending: THREE.NormalBlending,
-        depthWrite: false,
-        sizeAttenuation: true,
-    });
-
-    return new THREE.Points(geometry, material);
 }
 
 function showFinalModel() {
@@ -1075,7 +992,7 @@ function triggerRitualGesture(target) {
         updateGestureProgress(4);
         phaseTransitioning = false;
         const hintEl = document.getElementById('hint-text');
-        if (hintEl) hintEl.textContent = '浮金鱼影完成 · 3D 点云已现形';
+        if (hintEl) hintEl.textContent = '浮金鱼影完成 · 3D 模型已现形';
         updateRitualCue('release', false);
         return;
     }
@@ -1205,7 +1122,7 @@ function enterPhase(phase) {
             // 终局阶段：显示导入的 3D 浮金鱼影模型
             showFinalModel();
             if (panelBody) panelBody.style.display = '';
-            if (hintEl) hintEl.textContent = '浮金鱼影完成 · 3D 点云已现形';
+            if (hintEl) hintEl.textContent = '浮金鱼影完成 · 3D 模型已现形';
             updateRitualCue('release', false);
             break;
     }
@@ -1528,7 +1445,7 @@ function setupMediaPipe() {
                 }
                 if (currentPhase === PHASES.RELEASE) {
                     const hintEl = document.getElementById('hint-text');
-                    if (hintEl) hintEl.textContent = isFinalModelVisible ? '浮金鱼影完成 · 3D 点云已现形' : GESTURE_HINTS[4];
+                    if (hintEl) hintEl.textContent = isFinalModelVisible ? '浮金鱼影完成 · 3D 模型已现形' : GESTURE_HINTS[4];
                 }
 
                 // 在全屏画布上绘制骨骼（镜像翻转）
