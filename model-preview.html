@@ -155,7 +155,22 @@
         scene.add(floor);
 
         const loader = new GLTFLoader();
-        const modelUrl = new URL('./assets/models/浮金鱼影tripo.glb', window.location.href).href;
+        const modelPath = 'assets/models/浮金鱼影tripo.glb';
+
+        function getModelUrl() {
+            const previewSource = decodeURIComponent(window.location.search.slice(1));
+            const match = previewSource.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/.+$/);
+
+            if (match) {
+                const [, owner, repo, ref] = match;
+                const encodedPath = modelPath.split('/').map(encodeURIComponent).join('/');
+                return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${encodedPath}`;
+            }
+
+            return new URL(`./${modelPath}`, window.location.href).href;
+        }
+
+        const modelUrl = getModelUrl();
 
         loader.load(
             modelUrl,
