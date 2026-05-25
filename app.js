@@ -4,6 +4,7 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WaterRipple } from './water-ripple.js';
 
 // ═══════════════════════════════════════════════════════
@@ -17,6 +18,7 @@ const CONFIG = {
     cameraZ: 160,
     morphDuration: 1.5,       // 形态切换秒数
     boidsCount: 600,          // 鱼群数量
+    finalModelUrl: 'assets/models/浮金鱼影tripo.glb',
 };
 
 const DEFAULTS = {
@@ -191,6 +193,9 @@ const fragmentShader = /* glsl */`
 // 全局变量
 // ═══════════════════════════════════════════════════════
 let scene, camera, renderer, controls, particleSystem, uniforms;
+let finalModel = null;
+let finalModelMixer = null;
+let isFinalModelVisible = false;
 let boidsGroup;
 let waterRipple;
 let clock = new THREE.Clock();
@@ -435,6 +440,13 @@ async function init() {
     scene = new THREE.Scene();
     // 不设置 scene.background - 让水波纹背景透出来
     scene.fog = new THREE.FogExp2(0x080810, 0.001);
+    scene.add(new THREE.HemisphereLight(0xd8ecff, 0x2a1508, 1.6));
+    const finalKeyLight = new THREE.DirectionalLight(0xffdf9a, 2.8);
+    finalKeyLight.position.set(120, 150, 120);
+    scene.add(finalKeyLight);
+    const finalRimLight = new THREE.DirectionalLight(0x82d9ff, 1.8);
+    finalRimLight.position.set(-140, 80, -120);
+    scene.add(finalRimLight);
 
     // 相机
     camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -465,6 +477,9 @@ async function init() {
 
     // 创建鱼群（隐藏状态）
     createBoids();
+
+    // 加载终局 3D 鱼模型（隐藏状态）
+    loadFinalModel();
 
     // 添加水波纹背景粒子
     createBackgroundParticles();
@@ -779,6 +794,72 @@ function updateBoids(target, mode = 'follow') {
     boidsInstancedMesh.instanceMatrix.needsUpdate = true;
 }
 
+function loadFinalModel() {
+    const loader = new GLTFLoader();
+    loader.load(CONFIG.finalModelUrl, (gltf) => {
+        finalModel = gltf.scene;
+        finalModel.name = '浮金鱼影终局模型';
+        finalModel.visible = false;
+
+        const box = new THREE.Box3().setFromObject(finalModel);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const scale = 92 / maxDim;
+
+        finalModel.position.sub(center);
+        finalModel.scale.setScalar(scale);
+        finalModel.rotation.set(0.08, -1.45, 0.03);
+        finalModel.traverse((obj) => {
+            if (!obj.isMesh) return;
+            obj.castShadow = false;
+            obj.receiveShadow = false;
+            if (obj.material) {
+                obj.material.side = THREE.DoubleSide;
+                obj.material.needsUpdate = true;
+            }
+        });
+
+        scene.add(finalModel);
+        if (isFinalModelVisible) showFinalModel();
+
+        if (gltf.animations?.length) {
+            finalModelMixer = new THREE.AnimationMixer(finalModel);
+            gltf.animations.forEach((clip) => finalModelMixer.clipAction(clip).play());
+        }
+        console.log('[INFO] 终局 3D 模型加载完成: 浮金鱼影');
+    }, undefined, (err) => {
+        console.warn('[WARN] 终局 3D 模型加载失败:', CONFIG.finalModelUrl, err);
+    });
+}
+
+function showFinalModel() {
+    isFinalModelVisible = true;
+    isBoidsMode = false;
+    if (particleSystem) particleSystem.visible = false;
+    if (boidsGroup) boidsGroup.visible = false;
+    if (finalModel) {
+        finalModel.visible = true;
+        finalModel.position.y = 0;
+        finalModel.rotation.set(0.08, -1.45, 0.03);
+    }
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.55;
+    controls.target.set(0, 0, 0);
+    camera.position.set(0, 18, 170);
+    controls.update();
+
+    const cue = document.getElementById('ritual-cue');
+    if (cue) cue.classList.add('is-hidden');
+}
+
+function hideFinalModel() {
+    isFinalModelVisible = false;
+    if (finalModel) finalModel.visible = false;
+    controls.target.set(0, 0, 0);
+    controls.autoRotateSpeed = 0.3;
+}
+
 // ═══════════════════════════════════════════════════════
 // 水波纹背景 + 浮游微光粒子
 // ═══════════════════════════════════════════════════════
@@ -835,6 +916,7 @@ function createBackgroundParticles() {
 // ═══════════════════════════════════════════════════════
 function switchToStage(targetIdx) {
     if (isMorphing) return;
+    hideFinalModel();
 
     // 切入鱼群模式
     if (targetIdx >= STAGES.length) {
@@ -862,6 +944,7 @@ function switchToStage(targetIdx) {
 }
 
 function enterBoidsMode() {
+    hideFinalModel();
     isBoidsMode = true;
     particleSystem.visible = false;
     boidsGroup.visible = true;
@@ -875,6 +958,7 @@ function enterBoidsMode() {
 }
 
 function exitBoidsMode() {
+    hideFinalModel();
     isBoidsMode = false;
     particleSystem.visible = true;
     boidsGroup.visible = false;
@@ -896,20 +980,15 @@ function triggerRitualGesture(target) {
         playRitualSfx('release');
         resetRitualTimeout();
         ritualCooldown = RITUAL_COOLDOWN;
-        currentStage = 0;
-        isBoidsMode = false;
-        if (particleSystem) particleSystem.visible = false;
-        if (boidsGroup) boidsGroup.visible = false;
-        if (uniforms && textures[0]) {
-            uniforms.uTexA.value = textures[0];
-            uniforms.uTexB.value = textures[0];
-            uniforms.uMorph.value = 0.0;
-        }
+        currentPhase = PHASES.RELEASE;
+        showFinalModel();
         updateUI();
-        updateGestureProgress(0);
-        enterPhase(PHASES.WATER);
+        updatePhaseIndicator();
+        updateGestureProgress(4);
+        phaseTransitioning = false;
         const hintEl = document.getElementById('hint-text');
-        if (hintEl) hintEl.textContent = '🏮 鱼灯已放生，回归水面...';
+        if (hintEl) hintEl.textContent = '浮金鱼影完成 · 3D 建模已现形';
+        updateRitualCue('release', false);
         return;
     }
 
@@ -978,6 +1057,7 @@ function enterPhase(phase) {
     phaseTransitioning = true;
     playPhaseSfx(phase);
     if (phase === PHASES.CRAFTING || phase === PHASES.RELEASE) resetRitualTimeout();
+    hideFinalModel();
     
     const hintEl = document.getElementById('hint-text');
     const panelBody = document.getElementById('panel-body');
@@ -1034,13 +1114,11 @@ function enterPhase(phase) {
             break;
             
         case PHASES.RELEASE:
-            // 放生阶段：鱼群
-            if (particleSystem) particleSystem.visible = false;
-            if (boidsGroup) boidsGroup.visible = true;
-            isBoidsMode = true;
+            // 终局阶段：显示导入的 3D 浮金鱼影模型
+            showFinalModel();
             if (panelBody) panelBody.style.display = '';
-            if (hintEl) hintEl.textContent = '🏮 鱼灯群放生 · 张开手掌引导游动';
-            updateRitualCue(4);
+            if (hintEl) hintEl.textContent = '浮金鱼影完成 · 3D 建模已现形';
+            updateRitualCue('release', false);
             break;
     }
     
@@ -1070,6 +1148,13 @@ function advancePhase() {
             enterPhase(PHASES.RELEASE);
             break;
         case PHASES.RELEASE:
+            hideFinalModel();
+            currentStage = 0;
+            if (uniforms && textures[0]) {
+                uniforms.uTexA.value = textures[0];
+                uniforms.uTexB.value = textures[0];
+                uniforms.uMorph.value = 0.0;
+            }
             enterPhase(PHASES.WATER);
             break;
     }
@@ -1355,7 +1440,7 @@ function setupMediaPipe() {
                 }
                 if (currentPhase === PHASES.RELEASE) {
                     const hintEl = document.getElementById('hint-text');
-                    if (hintEl) hintEl.textContent = GESTURE_HINTS[4];
+                    if (hintEl) hintEl.textContent = isFinalModelVisible ? '浮金鱼影完成 · 3D 建模已现形' : GESTURE_HINTS[4];
                 }
 
                 // 在全屏画布上绘制骨骼（镜像翻转）
@@ -1790,6 +1875,11 @@ function animate() {
 
     // 更新 uniforms
     uniforms.uTime.value = time;
+    if (finalModelMixer) finalModelMixer.update(dt);
+    if (isFinalModelVisible && finalModel) {
+        finalModel.rotation.y += dt * 0.18;
+        finalModel.position.y = Math.sin(time * 0.9) * 4;
+    }
 
     // 更新物理水波纹
     if (waterRipple) {
