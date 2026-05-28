@@ -6,132 +6,165 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WaterRipple } from './water-ripple.js';
+import { FISH_TYPES, loadAllFishPointClouds, loadGLBMesh } from './glb-pointcloud.js';
+import { applyStippleMaterial } from './mesh-stipple.js';
+import { applySwimDeformation, FishDartController, FishSchool } from './fish-swim.js';
+import { BubbleSystem, SplashSystem, CausticsEffect } from './water-effects.js';
 
 // ═══════════════════════════════════════════════════════
 // 配置
 // ═══════════════════════════════════════════════════════
 const CONFIG = {
-    particleGrid: 256,        // 256×256 = 65536 粒子
-    pointSize: 2.5,
-    relief: 0.0,              // 3D 浮雕深度（默认平面，手势散开）
+    particleGrid: 256,        // 256×256 = 65536 粒子（备用morph）
+    texSize: 256,             // 数据纹理尺寸（须与 particleGrid 一致）
+    pointSize: 3.0,
     bgColor: 0x080810,
     cameraZ: 160,
-    morphDuration: 1.5,       // 形态切换秒数
+    morphDuration: 4.0,       // 形态切换秒数（TD风格需要足够时间展示粒子飞散）
     boidsCount: 600,          // 鱼群数量
     finalModelUrl: 'assets/models/浮金鱼影tripo.glb',
 };
 
 const DEFAULTS = {
-    pointSize: 2.5,
+    pointSize: 5.0,
     relief: 0.0,
     fluidStrength: 0.0,
     breathAmp: 0.02,
-    threshold: 0.85,
+    threshold: 0.12,
     tintColor: '#ffffff',
     tintStrength: 0.0,
     waterTheme: 'blue',
-    ritualTimeouts: [12, 15, 18, 18, 15],
+    ritualTimeouts: [15, 15, 18, 18, 15],
 };
 const SFX_GAIN = 0.18;
 
-// 形态贴图列表（活鱼→鱼灯→骨架→糊纸→上色）
+// 形态阶段（鱼影 → 鱼灯，中间过程暂时忽略）
 const STAGES = [
-    { name: '活鱼', url: 'assets/01_reference/carp/live_carp.png' },
-    { name: '骨架', url: 'assets/01_reference/carp/frame_carp.png' },
-    { name: '糊纸', url: 'assets/01_reference/carp/process_02_paper_skin_unpainted.png' },
-    { name: '上色', url: 'assets/01_reference/carp/process_03_painted_unlit.png' },
-    { name: '鱼灯', url: 'assets/01_reference/carp/lantern_carp.png' },
+    { name: '鱼影', key: 'fish' },
+    { name: '鱼灯', key: 'lantern' },
 ];
 
 // ═══════════════════════════════════════════════════════
 // Shader 代码
 // ═══════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════
+// 2D 图像粒子网格 Shader（参考 CULTURAL HERITAGE 方案）
+// GLB → 渲染为2D图像 → 图像驱动粒子网格
+// ═══════════════════════════════════════════════════════
 const vertexShader = /* glsl */`
     uniform float uTime;
-    uniform float uRelief;
     uniform float uSize;
     uniform float uMorph;         // 0~1 变形进度
     uniform float uBreathAmp;
-    uniform float uFluidStrength;
+    uniform float uFluidStrength; // 流动扰动
     uniform float uScatter;       // 手势散开力度 0~1
-    uniform vec3 uHandWorld;      // 手掌在世界空间的3D位置
+    uniform vec3 uHandWorld;
     uniform float uWind;          // 吹气风力 0~1
-    uniform sampler2D uTexA;      // 当前形态纹理
-    uniform sampler2D uTexB;      // 目标形态纹理
+    uniform sampler2D uPosA;      // 形态A 位置纹理 (RGBA Float)
+    uniform sampler2D uPosB;      // 形态B 位置纹理
+    uniform sampler2D uColA;      // 形态A 颜色纹理
+    uniform sampler2D uColB;      // 形态B 颜色纹理
+    uniform vec3 uTintColor;
+    uniform float uTintStrength;
 
-    attribute vec2 aUv;
+    attribute vec2 aUv;           // 数据纹理采样坐标
 
-    varying vec2 vUv;
+    varying vec3 vColor;
     varying float vLuma;
-    varying float vAlpha;
 
     void main() {
-        vUv = aUv;
+        // 从数据纹理采样 3D 位置
+        vec3 posA = texture2D(uPosA, aUv).xyz;
+        vec3 posB = texture2D(uPosB, aUv).xyz;
+        vec3 pos = mix(posA, posB, uMorph);
 
-        // 采样两个纹理的亮度
-        vec4 colA = texture2D(uTexA, aUv);
-        vec4 colB = texture2D(uTexB, aUv);
-        vec4 col = mix(colA, colB, uMorph);
+        // 从数据纹理采样颜色
+        vec3 colA = texture2D(uColA, aUv).rgb;
+        vec3 colB = texture2D(uColB, aUv).rgb;
+        vColor = mix(colA, colB, uMorph);
+
+        // 计算亮度
+        vLuma = dot(vColor, vec3(0.299, 0.587, 0.114));
+
+        // 染色叠加
+        if (uTintStrength > 0.01) {
+            vColor = mix(vColor, vColor * uTintColor, uTintStrength * 0.6);
+        }
+
+        // ═══ 游动动画 ═══
+        // 用粒子在模型上的归一化 X 位置作为尾部因子
+        float normX = (pos.x + 45.0) / 90.0; // 假设模型宽度约90
+        float tailFactor = smoothstep(-0.2, 0.6, normX);
         
-        float lumaA = dot(colA.rgb, vec3(0.299, 0.587, 0.114));
-        float lumaB = dot(colB.rgb, vec3(0.299, 0.587, 0.114));
-        float luma = mix(lumaA, lumaB, uMorph);
-        vLuma = luma;
-        vAlpha = col.a;
-
-        vec3 pos = position;
-
-        // 3D 浮雕：亮度越高凸起越多 (暗部在前/亮部在后，可以反转)
-        pos.z += (1.0 - luma) * uRelief;
-
-        // 游动动画：身体S形波浪 + 尾部大幅摆动 + 鳍摆动
-        float tailFactor = smoothstep(-0.2, 0.6, aUv.x); // 尾部→头部权重
-        // 身体S形传播波（从头到尾递增）
-        float bodyWave = sin(aUv.x * 8.0 - uTime * 4.0) * tailFactor * 4.5;
+        // 身体 S 形传播波（从头到尾递增）
+        float bodyWave = sin(normX * 8.0 - uTime * 4.0) * tailFactor * 3.5;
         pos.y += bodyWave;
+        
         // 尾部额外大幅摆动
-        float tailExtra = smoothstep(0.6, 1.0, aUv.x);
-        pos.y += sin(uTime * 5.0 - aUv.x * 3.0) * tailExtra * 6.0;
-        // 胸鳍区域微振（身体中部两侧）
-        float finArea = smoothstep(0.2, 0.4, aUv.x) * smoothstep(0.6, 0.4, aUv.x);
-        float finWave = sin(uTime * 8.0) * finArea * abs(aUv.y - 0.5) * 3.0;
+        float tailExtra = smoothstep(0.6, 1.0, normX);
+        pos.y += sin(uTime * 5.0 - normX * 3.0) * tailExtra * 5.0;
+        
+        // 胸鳍区域微振（身体中部）
+        float finArea = smoothstep(0.2, 0.4, normX) * smoothstep(0.6, 0.4, normX);
+        float finWave = sin(uTime * 8.0) * finArea * 2.0;
         pos.z += finWave;
+        
         // 整体上下浮动
-        pos.y += sin(uTime * 1.0) * 2.5;
+        pos.y += sin(uTime * 1.0) * 2.0;
         // 轻微左右游动
-        pos.x += sin(uTime * 0.7) * 1.5;
+        pos.x += sin(uTime * 0.7) * 1.2;
 
-        // 流动扰动
-        float noise = sin(pos.y * 0.08 + uTime * 1.5) * cos(pos.x * 0.08 + uTime);
-        pos.x += noise * uFluidStrength * (1.0 - luma);
-        pos.y += noise * uFluidStrength * 0.5;
-
-        // 呼吸
+        // 呼吸动画（微弱缩放）
         float breath = 1.0 + sin(uTime * 2.0) * uBreathAmp;
         pos *= breath;
 
-        // 变形时散开效果
-        float scatter = sin(uMorph * 3.14159);
-        float rnd = fract(sin(dot(aUv, vec2(12.9898, 78.233))) * 43758.5453);
-        pos += (vec3(rnd, fract(rnd*13.7), fract(rnd*7.3)) - 0.5) * scatter * 15.0;
+        // 流动扰动
+        if (uFluidStrength > 0.01) {
+            float noise = sin(pos.y * 0.08 + uTime * 1.5) * cos(pos.x * 0.08 + uTime);
+            pos.x += noise * uFluidStrength * (1.0 - vLuma);
+            pos.y += noise * uFluidStrength * 0.5;
+        }
 
-        // 手势散开/聚拢：张手时粒子整体向外爆炸式扩散
+        // ═══ TD 风格形态转换特效 ═══
+        // morphScatter: 0→1→0 (中间最大散开)
+        float morphScatter = sin(uMorph * 3.14159);
+        float morphScatter2 = morphScatter * morphScatter; // 更强的中间爆发
+        float rnd = fract(sin(dot(aUv, vec2(12.9898, 78.233))) * 43758.5453);
+        float rnd2 = fract(sin(dot(aUv * 2.3, vec2(53.1, 97.3))) * 2847.3);
+        float rnd3 = fract(sin(dot(aUv * 7.1, vec2(21.7, 43.1))) * 6271.9);
+
+        // 爆发飞散（粒子从原位置向外飞散，大幅度）
+        vec3 flyDir = normalize(pos + vec3(rnd - 0.5, rnd2 - 0.5, rnd3 - 0.5) * 2.0);
+        float flyDist = morphScatter2 * (25.0 + rnd * 55.0);
+        pos += flyDir * flyDist;
+
+        // 漩涡旋转（绕中心螺旋运动，TD标志性效果）
+        float spiralAngle = uTime * 2.5 + rnd * 6.2832 + morphScatter * rnd2 * 8.0;
+        float spiralRadius = morphScatter * (4.0 + rnd3 * 12.0);
+        pos.x += cos(spiralAngle) * spiralRadius;
+        pos.z += sin(spiralAngle) * spiralRadius;
+        pos.y += sin(uTime * 1.8 + rnd * 6.2832) * morphScatter * 6.0;
+
+        // curl noise 湍流（有机流动感）
+        float noiseT = uTime * 1.2 + rnd * 8.0;
+        pos.x += sin(pos.y * 0.06 + noiseT) * morphScatter * 8.0;
+        pos.y += cos(pos.x * 0.06 + noiseT * 0.7) * morphScatter * 5.0;
+        pos.z += sin(pos.z * 0.04 + noiseT * 0.5) * morphScatter * 4.0;
+
+        // 手势散开
         if (uScatter > 0.01) {
-            // 从模型中心向外推开（每个粒子沿自身位置方向散开）
             float d = length(pos);
             if (d > 0.1) {
                 vec3 dir = normalize(pos);
-                // 加入随机偏移让散开更自然
                 float rnd2 = fract(sin(dot(aUv * 3.7, vec2(53.1, 97.3))) * 2847.3);
                 float push = uScatter * (35.0 + rnd2 * 25.0);
                 pos += dir * push;
-                // Z方向也散开（3D效果）
                 pos.z += (rnd2 - 0.5) * uScatter * 30.0;
             }
         }
 
-        // 吹气风力：粒子向右飘散 + 随机抖动
+        // 吹气风力
         if (uWind > 0.01) {
             float windRnd = fract(sin(dot(aUv + uTime * 0.1, vec2(37.1, 81.7))) * 4375.5);
             pos.x += uWind * (20.0 + windRnd * 30.0);
@@ -140,52 +173,63 @@ const vertexShader = /* glsl */`
         }
 
         vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-        gl_PointSize = uSize * (300.0 / -mvPosition.z);
+        // 变形时粒子放大3倍（更醒目的TD粒子效果）
+        float morphSizeMul = 1.0 + morphScatter * 2.5;
+        gl_PointSize = uSize * morphSizeMul * (300.0 / -mvPosition.z);
         gl_Position = projectionMatrix * mvPosition;
     }
 `;
 
 const fragmentShader = /* glsl */`
-    uniform sampler2D uTexA;
-    uniform sampler2D uTexB;
-    uniform float uMorph;
-    uniform float uThreshold;
     uniform vec3 uTintColor;
     uniform float uTintStrength;
+    uniform float uThreshold;
+    uniform float uMorph;
 
-    varying vec2 vUv;
+    varying vec3 vColor;
     varying float vLuma;
-    varying float vAlpha;
 
     void main() {
-        // 插值颜色
-        vec4 colA = texture2D(uTexA, vUv);
-        vec4 colB = texture2D(uTexB, vUv);
-        vec4 color = mix(colA, colB, uMorph);
+        // 亮度过低（黑色/极暗）丢弃
+        if (vLuma < 0.08) discard;
+        // 亮度过高（接近白色/背景）降透明度
+        float highLumaFade = 1.0 - smoothstep(uThreshold - 0.15, uThreshold, vLuma);
 
-        // 去除高亮背景（白色/接近白色的部分）
-        if (vLuma > uThreshold) discard;
-        // 去除全黑
-        if (vLuma < 0.02) discard;
-
-        // 圆形粒子
+        // 圆形粒子遮罩
         vec2 coord = gl_PointCoord - vec2(0.5);
-        if (length(coord) > 0.5) discard;
+        float r2 = dot(coord, coord);
+        if (r2 > 0.25) discard;
 
-        // 柔化边缘
-        float edgeFade = 1.0 - smoothstep(0.35, 0.5, length(coord));
+        // 边缘柔化（中心亮，边缘渐暗）
+        float edgeFade = 1.0 - smoothstep(0.3, 0.5, sqrt(r2));
+
+        vec3 rgb = vColor;
+
+        // 色彩增强：提亮 + 饱和度提升
+        rgb = pow(rgb, vec3(0.75)); // 反 gamma 提亮
+        rgb *= 1.2; // 整体提亮
+
+        // 金色高光增强
+        vec3 gold = vec3(0.85, 0.65, 0.2);
+        rgb = mix(rgb, gold, vLuma * 0.12);
 
         // 染色叠加
-        vec3 rgb = color.rgb;
         if (uTintStrength > 0.01) {
             rgb = mix(rgb, rgb * uTintColor, uTintStrength * 0.6);
         }
 
-        // 轻微金色高光增强
-        vec3 gold = vec3(0.83, 0.68, 0.21);
-        rgb = mix(rgb, gold, vLuma * 0.08);
+        // TD 风格变形发光：转变中粒子发出温暖光芒（高亮度）
+        float morphGlow = sin(uMorph * 3.14159);
+        vec3 glowColor = mix(vec3(0.4, 0.7, 1.0), vec3(1.0, 0.8, 0.3), uMorph); // 蓝→金渐变
+        rgb = mix(rgb, glowColor, morphGlow * 0.7); // 更强的颜色覆盖
+        rgb += glowColor * morphGlow * 0.8; // 叠加发光
+        // 变形期间大幅增加透明度（粒子更亮更实）
+        float morphAlphaBoost = morphGlow * 0.6;
 
-        gl_FragColor = vec4(rgb, edgeFade * 0.95);
+        // NormalBlending 高alpha，使粒子重叠形成实心表面
+        float finalAlpha = edgeFade * 0.88 * highLumaFade + morphAlphaBoost;
+        finalAlpha = clamp(finalAlpha, 0.0, 1.0);
+        gl_FragColor = vec4(rgb, finalAlpha);
     }
 `;
 
@@ -204,6 +248,31 @@ let isMorphing = false;
 let morphProgress = 0;
 let isBoidsMode = false;
 let textures = [];
+
+// 变形暗化遮罩
+const morphOverlay = document.createElement('div');
+morphOverlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);pointer-events:none;opacity:0;transition:opacity 0.5s;z-index:5;';
+document.body.appendChild(morphOverlay);
+
+// GLB 点云数据
+let fishPointClouds = [];     // [{fish:{posTex,colTex}, lantern:{posTex,colTex}}, ...]
+let currentFishIndex = 0;     // 当前鱼种索引
+let pcTextures = { posA: null, posB: null, colA: null, colB: null };
+// GLB 渲染为 2D 纹理（CRAFTING 阶段粒子系统用）
+let fishRenderedTextures = { fish: null, lantern: null };
+// GLB 网格模型（FISHING 阶段直接显示）
+let fishMeshGroup = null;     // 当前显示的鱼网格 THREE.Group
+let fishStippleMat = null;    // 粒子化材质引用
+let fishMeshSwimTime = 0;     // 游动动画时间
+let fishSwimCtrl = null;      // 游泳变形控制器 { update(time), uniforms }
+let fishDartCtrl = null;      // 窜动行为控制器 FishDartController
+let fishSchool = null;        // 放生阶段鱼群 FishSchool
+let fishingLine = null;       // 钓鱼线+鱼钩 Three.js 对象
+let lanternMeshGroup = null;  // 鱼灯 GLB 模型
+let allFishMeshes = [];       // 全部5种鱼的GLB（用于鱼群混合）
+let bubbleSystem = null;      // 气泡特效
+let splashSystem = null;      // 水花特效
+let causticsEffect = null;    // 焦散光影
 let handData = { detected: false, palmX: 0, palmY: 0, pinchDist: 1.0, isPinching: false, pinchCooldown: 0, fingersUp: 0 };
 let sfxContext = null;
 let sfxMaster = null;
@@ -360,11 +429,8 @@ function playRitualSfx(stage) {
 
 // 手势提示文字映射
 const GESTURE_HINTS = {
-    0: '双手张开向两侧推 · 展开竹骨架',
-    1: '单手从左向右缓慢抹过 · 糊上竹纸',
-    2: '握拳，感受墨色，再缓缓张开',
-    3: '双手靠近，向上托起 · 点亮鱼灯',
-    4: '张开手掌引导鱼群 · 向上抬手放生',
+    0: '双手张开向两侧推 · 制作鱼灯',
+    1: '鱼灯完成 · 张手向上放生',
 };
 const RITUAL_CUES = {
     water: {
@@ -381,30 +447,11 @@ const RITUAL_CUES = {
     },
     0: {
         gesture: 'spread',
-        kicker: '制灯 1/5',
+        kicker: '制灯 1/2',
         title: '双手向两侧推开',
-        subtitle: '像撑开竹篾一样，让鱼的骨架展开。',
+        subtitle: '将活鱼化为鱼灯，粒子会重新聚合成灯的形态。',
     },
     1: {
-        gesture: 'wipe',
-        kicker: '制灯 2/5',
-        title: '单手从左向右抹过',
-        subtitle: '像把纸面覆上鱼身，动作要平稳。',
-    },
-    2: {
-        gesture: 'bloom',
-        kicker: '制灯 3/5',
-        title: '先握拳，再缓缓张开',
-        subtitle: '让颜色从掌心散开，点染鱼鳞。',
-        hands: ['✊', '✋'],
-    },
-    3: {
-        gesture: 'lift',
-        kicker: '制灯 4/5',
-        title: '两手张开，靠拢向上托',
-        subtitle: '像把鱼灯捧起来：双手从两侧靠近，然后一起上抬。',
-    },
-    4: {
         gesture: 'release',
         kicker: '完成',
         title: '张开手掌向上抬',
@@ -458,6 +505,11 @@ async function init() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    // 水下特效系统
+    bubbleSystem = new BubbleSystem(scene);
+    splashSystem = new SplashSystem(scene);
+    causticsEffect = new CausticsEffect(scene, { width: 350, height: 220, z: -8 });
 
     // 轨道控制（鼠标兜底操作）
     controls = new OrbitControls(camera, renderer.domElement);
@@ -517,61 +569,178 @@ async function init() {
 // ═══════════════════════════════════════════════════════
 // 纹理加载
 // ═══════════════════════════════════════════════════════
-function loadTextures() {
-    return new Promise((resolve) => {
-        const loader = new THREE.TextureLoader();
-        let loaded = 0;
-        
-        STAGES.forEach((stage, i) => {
-            loader.load(stage.url, (tex) => {
-                tex.minFilter = THREE.LinearFilter;
-                tex.magFilter = THREE.LinearFilter;
-                textures[i] = tex;
-                loaded++;
-                console.log(`[INFO] 纹理加载完成: ${stage.name} (${loaded}/${STAGES.length})`);
-                if (loaded === STAGES.length) resolve();
-            }, undefined, (err) => {
-                console.warn(`[WARN] 纹理加载失败: ${stage.url}`, err);
-                // 创建一个占位纹理
-                const canvas = document.createElement('canvas');
-                canvas.width = canvas.height = 256;
-                const ctx = canvas.getContext('2d');
-                ctx.fillStyle = '#222';
-                ctx.fillRect(0, 0, 256, 256);
-                ctx.fillStyle = '#d4af37';
-                ctx.font = '24px serif';
-                ctx.fillText(stage.name, 80, 130);
-                textures[i] = new THREE.CanvasTexture(canvas);
-                loaded++;
-                if (loaded === STAGES.length) resolve();
-            });
-        });
+async function loadTextures() {
+    // 加载所有鱼种的 GLB 点云数据
+    const loaderSub = document.querySelector('.loader-sub');
+    fishPointClouds = await loadAllFishPointClouds(CONFIG.texSize, 90, (loaded, total) => {
+        console.log(`[INFO] 点云采样: ${FISH_TYPES[loaded - 1].name} (${loaded}/${total})`);
+        if (loaderSub) loaderSub.textContent = `正在采样点云... ${loaded}/${total}`;
     });
+    // 设置初始鱼种的纹理
+    applyFishTextures(currentFishIndex, 0);
+    console.log(`[INFO] 全部点云加载完成, ${FISH_TYPES.length} 种鱼, 每种 ${CONFIG.texSize * CONFIG.texSize} 粒子`);
+
+    // 加载当前鱼种的 GLB 网格模型（FISHING 阶段直接渲染用）
+    if (loaderSub) loaderSub.textContent = '正在加载3D模型...';
+    await loadFishMesh(currentFishIndex);
+    await loadLanternMesh(currentFishIndex);
+    
+    // 预加载全部5种鱼的GLB（用于鱼群阶段混合显示）
+    if (loaderSub) loaderSub.textContent = '正在加载鱼群模型...';
+    allFishMeshes = [];
+    // 浮金鱼(0)和红鲤鱼(3)的模型鼻子方向与其他鱼相反，需翻转几何体
+    const NOSE_FLIPPED = [0, 3];
+    const flipMatrix = new THREE.Matrix4().makeRotationY(Math.PI);
+    for (let i = 0; i < FISH_TYPES.length; i++) {
+        try {
+            const mesh = await loadGLBMesh(FISH_TYPES[i].fish, 90);
+            mesh.visible = false;
+            if (NOSE_FLIPPED.includes(i)) {
+                mesh.traverse(child => {
+                    if (child.isMesh && child.geometry) {
+                        child.geometry.applyMatrix4(flipMatrix);
+                    }
+                });
+            }
+            allFishMeshes.push(mesh);
+        } catch (e) {
+            console.warn(`[WARN] 鱼群模型 ${FISH_TYPES[i].name} 加载失败`);
+        }
+    }
+    console.log(`[INFO] 鱼群模型全部加载: ${allFishMeshes.length} 种`);
+}
+
+/**
+ * 加载指定鱼种的 GLB 网格模型（保留原始材质）
+ */
+async function loadFishMesh(fishIdx) {
+    const fishType = FISH_TYPES[fishIdx];
+    if (!fishType) return;
+    // 移除旧的网格
+    if (fishMeshGroup) {
+        scene.remove(fishMeshGroup);
+        fishMeshGroup = null;
+        fishStippleMat = null;
+        fishSwimCtrl = null;
+    }
+    try {
+        fishMeshGroup = await loadGLBMesh(fishType.fish, 90);
+        // 浮金鱼(0)和红鲤鱼(3)模型鼻子方向相反，翻转几何体
+        if (fishIdx === 0 || fishIdx === 3) {
+            const flip = new THREE.Matrix4().makeRotationY(Math.PI);
+            fishMeshGroup.traverse(child => {
+                if (child.isMesh && child.geometry) {
+                    child.geometry.applyMatrix4(flip);
+                }
+            });
+        }
+        // 保留原始材质，不应用 stipple
+        fishMeshGroup.visible = false; // 初始隐藏
+        scene.add(fishMeshGroup);
+        // 注入身体波浪游泳动画
+        fishSwimCtrl = applySwimDeformation(fishMeshGroup, {
+            speed: 3.5,
+            amplitude: 0.1,
+            frequency: 2.0,
+            tailBias: 2.2,
+        });
+        window.__fishMeshGroup = fishMeshGroup;
+        console.log(`[INFO] 鱼网格模型加载完成: ${fishType.name}`);
+    } catch (err) {
+        console.warn('[WARN] 鱼网格模型加载失败:', err);
+    }
+}
+
+/**
+ * 加载鱼灯 GLB 模型
+ */
+async function loadLanternMesh(fishIdx) {
+    const fishType = FISH_TYPES[fishIdx];
+    if (!fishType) return;
+    if (lanternMeshGroup) {
+        scene.remove(lanternMeshGroup);
+        lanternMeshGroup = null;
+    }
+    try {
+        lanternMeshGroup = await loadGLBMesh(fishType.lantern, 90);
+        lanternMeshGroup.visible = false;
+        scene.add(lanternMeshGroup);
+        console.log(`[INFO] 鱼灯模型加载完成: ${fishType.name}`);
+    } catch (err) {
+        console.warn('[WARN] 鱼灯模型加载失败:', err);
+    }
+}
+
+/**
+ * 应用指定鱼种的点云纹理到 uniforms
+ * @param {number} fishIdx - 鱼种索引
+ * @param {number} stageIdx - 0=鱼影, 1=鱼灯
+ */
+function applyFishTextures(fishIdx, stageIdx) {
+    const data = fishPointClouds[fishIdx];
+    if (!data) return;
+    const stageKey = stageIdx === 0 ? 'fish' : 'lantern';
+    pcTextures.posA = data[stageKey].posTex;
+    pcTextures.posB = data[stageKey].posTex;
+    pcTextures.colA = data[stageKey].colTex;
+    pcTextures.colB = data[stageKey].colTex;
+    if (uniforms) {
+        uniforms.uPosA.value = pcTextures.posA;
+        uniforms.uPosB.value = pcTextures.posB;
+        uniforms.uColA.value = pcTextures.colA;
+        uniforms.uColB.value = pcTextures.colB;
+        uniforms.uMorph.value = 0.0;
+    }
+}
+
+/**
+ * 切换鱼种（保持当前阶段）
+ */
+async function switchFishType(newIndex) {
+    if (isMorphing) return;
+    if (newIndex < 0) newIndex = FISH_TYPES.length - 1;
+    if (newIndex >= FISH_TYPES.length) newIndex = 0;
+    currentFishIndex = newIndex;
+    applyFishTextures(currentFishIndex, currentStage);
+    
+    // 同时更新网格模型
+    await loadFishMesh(currentFishIndex);
+    await loadLanternMesh(currentFishIndex);
+    
+    console.log(`[INFO] 切换鱼种: ${FISH_TYPES[currentFishIndex].name}`);
+    // Toast提示
+    showToast(`🐟 ${FISH_TYPES[currentFishIndex].name}`);
+    // 更新 UI 提示
+    const hintEl = document.getElementById('hint-text');
+    if (hintEl && currentPhase === PHASES.CRAFTING) {
+        hintEl.textContent = `${FISH_TYPES[currentFishIndex].name} · ${STAGES[currentStage].name}`;
+    }
 }
 
 // ═══════════════════════════════════════════════════════
-// 粒子系统
+// 粒子系统（3D 点云 + 数据纹理驱动）
 // ═══════════════════════════════════════════════════════
 function createParticleSystem() {
-    const count = CONFIG.particleGrid;
+    const count = CONFIG.texSize;
     const numParticles = count * count;
 
     const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(numParticles * 3);
+    const positions = new Float32Array(numParticles * 3); // 占位（实际位置由shader从纹理读取）
     const uvs = new Float32Array(numParticles * 2);
 
+    // 生成索引 UV（用于在 shader 中查找数据纹理）
     let idx = 0;
     for (let y = 0; y < count; y++) {
         for (let x = 0; x < count; x++) {
-            const u = x / count;
-            const v = y / count;
+            const u = (x + 0.5) / count;
+            const v = (y + 0.5) / count;
 
-            positions[idx * 3]     = (0.5 - u) * 180; // X: 翻转使鱼头朝右
-            positions[idx * 3 + 1] = (0.5 - v) * 180; // Y: 翻转使鱼正朝上
-            positions[idx * 3 + 2] = 0;                // Z (由shader计算)
+            positions[idx * 3]     = 0;
+            positions[idx * 3 + 1] = 0;
+            positions[idx * 3 + 2] = 0;
 
             uvs[idx * 2]     = u;
-            uvs[idx * 2 + 1] = 1.0 - v; // UV的V翻转：图像y=0在顶部，OpenGL纹理y=0在底部
+            uvs[idx * 2 + 1] = v;
 
             idx++;
         }
@@ -580,14 +749,20 @@ function createParticleSystem() {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('aUv', new THREE.BufferAttribute(uvs, 2));
 
+    // 创建占位纹理（1×1 黑色 Float）
+    const placeholderTex = new THREE.DataTexture(
+        new Float32Array([0, 0, 0, 1]), 1, 1, THREE.RGBAFormat, THREE.FloatType
+    );
+    placeholderTex.needsUpdate = true;
+
     uniforms = {
         uTime:          { value: 0 },
-        uTexA:          { value: textures[0] },
-        uTexB:          { value: textures[0] },
+        uPosA:          { value: pcTextures.posA || placeholderTex },
+        uPosB:          { value: pcTextures.posB || placeholderTex },
+        uColA:          { value: pcTextures.colA || placeholderTex },
+        uColB:          { value: pcTextures.colB || placeholderTex },
         uMorph:         { value: 0.0 },
         uSize:          { value: CONFIG.pointSize },
-        uRelief:        { value: CONFIG.relief },
-        uThreshold:     { value: 0.85 },
         uBreathAmp:     { value: 0.02 },
         uFluidStrength: { value: 0.0 },
         uScatter:       { value: 0.0 },
@@ -595,6 +770,7 @@ function createParticleSystem() {
         uWind:          { value: 0.0 },
         uTintColor:     { value: new THREE.Vector3(1, 1, 1) },
         uTintStrength:  { value: 0.0 },
+        uThreshold:     { value: 0.85 },
     };
 
     const material = new THREE.ShaderMaterial({
@@ -602,13 +778,18 @@ function createParticleSystem() {
         vertexShader,
         fragmentShader,
         transparent: true,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
+        depthWrite: true,
+        blending: THREE.NormalBlending,
     });
 
     particleSystem = new THREE.Points(geometry, material);
     particleSystem.frustumCulled = false;
     scene.add(particleSystem);
+    // DEBUG
+    window.__uniforms = uniforms;
+    window.__pcTextures = pcTextures;
+    window.__scene = scene;
+    window.__particleSystem = particleSystem;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -795,47 +976,50 @@ function updateBoids(target, mode = 'follow') {
 }
 
 function loadFinalModel() {
-    const loader = new GLTFLoader();
-    loader.load(CONFIG.finalModelUrl, (gltf) => {
-        finalModel = gltf.scene;
-        finalModel.name = '浮金鱼影终局模型';
-        finalModel.visible = false;
+    // 不再加载独立的终局模型，RELEASE 阶段直接复用 fishMeshGroup
+    console.log('[INFO] 放生阶段将复用钓鱼阶段的鱼模型');
+}
 
-        const box = new THREE.Box3().setFromObject(finalModel);
-        const size = box.getSize(new THREE.Vector3());
-        const center = box.getCenter(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z) || 1;
-        const scale = 92 / maxDim;
+/**
+ * 显示鱼灯GLB模型（制灯阶段后期 → 点亮鱼灯时调用）
+ */
+let lanternGlowProgress = 0;  // 0~1 点亮渐变进度
+let lanternGlowing = false;   // 是否正在点亮
+let lanternPointLight = null; // 内部点光源
 
-        finalModel.position.sub(center);
-        finalModel.scale.setScalar(scale);
-        finalModel.rotation.set(0.08, -1.45, 0.03);
-        finalModel.traverse((obj) => {
-            if (!obj.isMesh) return;
-            obj.castShadow = false;
-            obj.receiveShadow = false;
-            if (obj.material) {
-                const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
-                materials.forEach((mat) => {
-                    mat.side = THREE.DoubleSide;
-                    if ('roughness' in mat) mat.roughness = Math.min(mat.roughness ?? 0.55, 0.62);
-                    if ('metalness' in mat) mat.metalness = Math.max(mat.metalness ?? 0, 0.02);
-                    mat.needsUpdate = true;
-                });
-            }
-        });
-
-        scene.add(finalModel);
-        if (isFinalModelVisible) showFinalModel();
-
-        if (gltf.animations?.length) {
-            finalModelMixer = new THREE.AnimationMixer(finalModel);
-            gltf.animations.forEach((clip) => finalModelMixer.clipAction(clip).play());
+function showLanternModel() {
+    if (!lanternMeshGroup) return;
+    // 隐藏鱼，显示灯
+    if (fishMeshGroup) fishMeshGroup.visible = false;
+    lanternMeshGroup.visible = true;
+    lanternMeshGroup.position.set(0, 0, 0);
+    lanternMeshGroup.rotation.set(0, Math.PI / 2, 0);
+    // 保持与鱼相同的展示尺寸
+    const origScale = fishMeshGroup ? (fishMeshGroup.userData._originalScale || 1) : 1;
+    lanternMeshGroup.scale.setScalar(origScale);
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.8;
+    
+    // 启动点亮仪式
+    lanternGlowing = true;
+    lanternGlowProgress = 0;
+    // 初始暗色
+    lanternMeshGroup.traverse((obj) => {
+        if (obj.isMesh && obj.material) {
+            obj.material.emissiveIntensity = 0;
         }
-        console.log('[INFO] 终局 3D 模型加载完成: 浮金鱼影');
-    }, undefined, (err) => {
-        console.warn('[WARN] 终局 3D 模型加载失败:', CONFIG.finalModelUrl, err);
     });
+    // 添加内部暖光点光源
+    if (!lanternPointLight) {
+        lanternPointLight = new THREE.PointLight(0xffaa44, 0, 80);
+        scene.add(lanternPointLight);
+    }
+    lanternPointLight.position.set(0, 0, 0);
+    lanternPointLight.intensity = 0;
+}
+
+function hideLanternModel() {
+    if (lanternMeshGroup) lanternMeshGroup.visible = false;
 }
 
 function showFinalModel() {
@@ -843,10 +1027,11 @@ function showFinalModel() {
     isBoidsMode = false;
     if (particleSystem) particleSystem.visible = false;
     if (boidsGroup) boidsGroup.visible = false;
-    if (finalModel) {
-        finalModel.visible = true;
-        finalModel.position.y = 0;
-        finalModel.rotation.set(0.08, -1.45, 0.03);
+    // 显示 GLB 模型
+    if (fishMeshGroup) {
+        fishMeshGroup.visible = true;
+        fishMeshGroup.position.set(0, 0, 0);
+        fishMeshGroup.rotation.set(0, 0, 0);
     }
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.55;
@@ -860,7 +1045,7 @@ function showFinalModel() {
 
 function hideFinalModel() {
     isFinalModelVisible = false;
-    if (finalModel) finalModel.visible = false;
+    if (fishMeshGroup) fishMeshGroup.visible = false;
     controls.target.set(0, 0, 0);
     controls.autoRotateSpeed = 0.3;
 }
@@ -925,6 +1110,8 @@ function switchToStage(targetIdx) {
 
     // 切入鱼群模式
     if (targetIdx >= STAGES.length) {
+        // 进入鱼群前，显示鱼灯GLB模型作为过渡
+        showLanternModel();
         enterBoidsMode();
         currentStage = targetIdx;
         updateUI();
@@ -938,12 +1125,35 @@ function switchToStage(targetIdx) {
 
     if (targetIdx === currentStage && !isBoidsMode) return;
 
+    // 设置 morph: 从当前阶段 → 目标阶段
+    const data = fishPointClouds[currentFishIndex];
+    if (!data) return;
+    const fromKey = currentStage === 0 ? 'fish' : 'lantern';
+    const toKey = targetIdx === 0 ? 'fish' : 'lantern';
+
     isMorphing = true;
     morphProgress = 0;
-    uniforms.uTexA.value = textures[currentStage] || textures[0];
-    uniforms.uTexB.value = textures[targetIdx];
+    uniforms.uPosA.value = data[fromKey].posTex;
+    uniforms.uPosB.value = data[toKey].posTex;
+    uniforms.uColA.value = data[fromKey].colTex;
+    uniforms.uColB.value = data[toKey].colTex;
     uniforms.uMorph.value = 0.0;
     currentStage = targetIdx;
+
+    // TD粒子变形：显示粒子系统，隐藏GLB模型（变形期间用粒子表演）
+    if (particleSystem) {
+        particleSystem.visible = true;
+        particleSystem.position.set(0, 0, 0);
+    }
+    if (fishMeshGroup) fishMeshGroup.visible = false;
+    if (lanternMeshGroup) lanternMeshGroup.visible = false;
+
+    // 背景暗化（让粒子更醒目）
+    morphOverlay.style.opacity = '1';
+
+    // 提示
+    showToast('✨ 粒子化形中…', CONFIG.morphDuration * 1000);
+
     resetRitualTimeout();
     updateUI();
 }
@@ -958,8 +1168,8 @@ function enterBoidsMode() {
         currentPhase = PHASES.RELEASE;
         updatePhaseIndicator();
     }
-    document.getElementById('hint-text').textContent = GESTURE_HINTS[4];
-    updateRitualCue(4);
+    document.getElementById('hint-text').textContent = GESTURE_HINTS[1] || '张开手掌向上放生';
+    updateRitualCue(1);
 }
 
 function exitBoidsMode() {
@@ -985,6 +1195,8 @@ function triggerRitualGesture(target) {
         playRitualSfx('release');
         resetRitualTimeout();
         ritualCooldown = RITUAL_COOLDOWN;
+        // 如果已在放生阶段（鱼群模式），不重复触发
+        if (currentPhase === PHASES.RELEASE && fishSchool) return;
         currentPhase = PHASES.RELEASE;
         showFinalModel();
         updateUI();
@@ -1032,7 +1244,12 @@ function updateGestureProgress(stage) {
 function updateRitualCue(key, forceShow = true) {
     const cue = RITUAL_CUES[key];
     const root = document.getElementById('ritual-cue');
-    if (!root || !cue) return;
+    if (!root) return;
+    // 无对应cue或不强制显示时隐藏
+    if (!cue || !forceShow) {
+        root.classList.add('is-hidden');
+        return;
+    }
 
     const kicker = document.getElementById('ritual-kicker');
     const title = document.getElementById('ritual-title');
@@ -1045,7 +1262,7 @@ function updateRitualCue(key, forceShow = true) {
     if (leftHand) leftHand.textContent = cue.hands?.[0] || '✋';
     if (rightHand) rightHand.textContent = cue.hands?.[1] || '✋';
     root.dataset.gesture = cue.gesture;
-    root.classList.toggle('is-hidden', !forceShow);
+    root.classList.remove('is-hidden');
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1057,12 +1274,25 @@ let fishShadowOpacity = 0;   // 水下鱼影透明度
 let fishAttracted = false;   // 鱼是否被吸引靠近
 let fishAttractionTimer = 0; // 鱼影吸引累计时间
 
+// 钓鱼状态机
+const FISH_STATE = { SWIMMING: 0, APPROACHING: 1, BITING: 2, STRUGGLING: 3, CAUGHT: 4 };
+let fishingState = FISH_STATE.SWIMMING;
+let fishingStateTimer = 0;      // 当前状态持续时间
+let fishingApproachDelay = 0;   // 自动靠近鱼钩的等待时间
+let fishingStruggleCount = 0;   // 挣扎次数计数
+
 function enterPhase(phase) {
     currentPhase = phase;
     phaseTransitioning = true;
     playPhaseSfx(phase);
     if (phase === PHASES.CRAFTING || phase === PHASES.RELEASE) resetRitualTimeout();
     hideFinalModel();
+    
+    // 统一隐藏所有 GLB，各阶段按需重新显示
+    if (fishMeshGroup) fishMeshGroup.visible = false;
+    if (lanternMeshGroup) lanternMeshGroup.visible = false;
+    if (fishSchool) { scene.remove(fishSchool.container); fishSchool = null; }
+    if (fishingLine) { scene.remove(fishingLine); fishingLine = null; }
     
     const hintEl = document.getElementById('hint-text');
     const panelBody = document.getElementById('panel-body');
@@ -1071,7 +1301,11 @@ function enterPhase(phase) {
         case PHASES.WATER:
             // 水面阶段：隐藏鱼和鱼群，只有水波纹，偶有鱼影
             if (particleSystem) particleSystem.visible = false;
+            if (fishMeshGroup) fishMeshGroup.visible = false;
+            if (lanternMeshGroup) lanternMeshGroup.visible = false;
             if (boidsGroup) boidsGroup.visible = false;
+            if (fishSchool) { scene.remove(fishSchool.container); fishSchool = null; }
+            if (fishingLine) { scene.remove(fishingLine); fishingLine = null; }
             if (panelBody) panelBody.style.display = 'none';
             if (hintEl) hintEl.textContent = '用指尖触碰水面...';
             updateRitualCue('water');
@@ -1083,47 +1317,96 @@ function enterPhase(phase) {
             break;
             
         case PHASES.FISHING:
-            // 钓鱼阶段：鱼作为暗影出现在水下
-            if (particleSystem) {
-                particleSystem.visible = true;
-                particleSystem.scale.set(0.15, 0.15, 0.15);
-                particleSystem.position.set(0, -80, 0);
+            // 钓鱼阶段：GLB模型侧视游动
+            if (particleSystem) particleSystem.visible = false;
+            if (lanternMeshGroup) lanternMeshGroup.visible = false;
+            if (fishSchool) { scene.remove(fishSchool.container); fishSchool = null; }
+            if (fishMeshGroup) {
+                fishMeshGroup.visible = true;
+                fishMeshGroup.position.set(0, 0, 0);
+                // 侧面视角：Y轴-90°让鱼侧面朝相机
+                fishMeshGroup.rotation.set(0, -Math.PI / 2, 0);
+                // 缩小为水下鱼影（原始90单位太大）
+                const baseScale = fishMeshGroup.userData._originalScale || fishMeshGroup.scale.x;
+                fishMeshGroup.userData._originalScale = baseScale;
+                fishMeshGroup.scale.setScalar(baseScale * 0.35);
             }
+            // 创建窜动控制器（缩小范围确保在相机视野内）
+            fishDartCtrl = new FishDartController({ x: 55, y: 35 });
+            fishMeshSwimTime = 0;
             if (boidsGroup) boidsGroup.visible = false;
             fishEmergProgress = 0;
             fishAttracted = false;
+            // 初始化钓鱼状态机
+            fishingState = FISH_STATE.SWIMMING;
+            fishingStateTimer = 0;
+            fishingApproachDelay = 3 + Math.random() * 4; // 3~7秒后鱼开始靠近鱼钩
+            fishingStruggleCount = 0;
+            // 创建钓鱼线+鱼钩
+            createFishingLine();
             if (hintEl) hintEl.textContent = '水下有鱼影在游动...';
             updateRitualCue('fishing');
+            controls.autoRotate = false;
+            controls.target.set(0, 0, 0);
+            // 正面侧视：相机在正前方看鱼的侧面
+            camera.position.set(0, 0, 160);
+            controls.update();
             break;
             
         case PHASES.CRAFTING:
-            // 制灯阶段：正常粒子鱼+形态切换
-            if (particleSystem) {
-                particleSystem.visible = true;
-                particleSystem.scale.set(1, 1, 1);
-                particleSystem.position.set(0, 0, 0);
-                particleSystem.rotation.set(0, 0, 0);
+            // 制灯阶段：GLB模型居中展示（侧面视角）
+            if (particleSystem) particleSystem.visible = false;
+            // 移除钓鱼线
+            if (fishingLine) { scene.remove(fishingLine); fishingLine = null; }
+            // 清除鱼群（从放生阶段残留）
+            if (fishSchool) { scene.remove(fishSchool.container); fishSchool = null; }
+            if (fishMeshGroup) {
+                fishMeshGroup.visible = true;
+                fishMeshGroup.position.set(0, 0, 0);
+                // 重置四元数，然后设置侧面朝向（Y=-90°让鼻子朝右）
+                fishMeshGroup.quaternion.identity();
+                fishMeshGroup.rotation.set(0, -Math.PI / 2, 0);
+                // 恢复原始大小
+                const origScale = fishMeshGroup.userData._originalScale || fishMeshGroup.scale.x;
+                fishMeshGroup.scale.setScalar(origScale);
             }
-            // 恢复原色（去除钓鱼阶段的暗影染色）
-            uniforms.uTintColor.value.set(1, 1, 1);
-            uniforms.uTintStrength.value = 0;
             if (boidsGroup) boidsGroup.visible = false;
             isBoidsMode = false;
             if (panelBody) panelBody.style.display = '';
             if (hintEl) hintEl.textContent = GESTURE_HINTS[0];
             updateRitualCue(0);
-            controls.autoRotate = true;
+            controls.autoRotate = false; // 不旋转相机（保持水面背景不动）
+            controls.autoRotateSpeed = 0;
             // 显示制灯进度指示器
             { const gp = document.getElementById('gesture-progress'); if (gp) gp.style.display = 'flex'; }
             updateGestureProgress(0);
             break;
             
         case PHASES.RELEASE:
-            // 终局阶段：显示导入的 3D 浮金鱼影模型
-            showFinalModel();
+            // 放生阶段：一群鱼跟随手势游来游去
+            if (particleSystem) particleSystem.visible = false;
+            if (fishMeshGroup) fishMeshGroup.visible = false;
+            if (lanternMeshGroup) lanternMeshGroup.visible = false;
+            if (boidsGroup) boidsGroup.visible = false;
+            // 移除钓鱼线
+            if (fishingLine) { scene.remove(fishingLine); fishingLine = null; }
+            // 创建鱼群（5种鱼混合）
+            if (fishSchool) { scene.remove(fishSchool.container); fishSchool = null; }
+            const templates = allFishMeshes.length > 0 ? allFishMeshes : (fishMeshGroup ? [fishMeshGroup] : []);
+            if (templates.length > 0) {
+                fishSchool = new FishSchool(templates, 10, { x: 70, y: 50, z: 30 });
+                fishSchool.container.visible = true;
+                scene.add(fishSchool.container);
+            }
+            isFinalModelVisible = false; // 放生阶段用鱼群，不显示单条大鱼
             if (panelBody) panelBody.style.display = '';
-            if (hintEl) hintEl.textContent = '浮金鱼影完成 · 3D 模型已现形';
+            if (hintEl) hintEl.textContent = '鱼群跟随你的手游动...伸出手掌引导它们';
             updateRitualCue('release', false);
+            controls.autoRotate = false;
+            controls.target.set(0, 0, 0);
+            // 正面侧视，与钓鱼阶段一致
+            camera.position.set(0, 0, 170);
+            controls.update();
             break;
     }
     
@@ -1155,11 +1438,7 @@ function advancePhase() {
         case PHASES.RELEASE:
             hideFinalModel();
             currentStage = 0;
-            if (uniforms && textures[0]) {
-                uniforms.uTexA.value = textures[0];
-                uniforms.uTexB.value = textures[0];
-                uniforms.uMorph.value = 0.0;
-            }
+            applyFishTextures(currentFishIndex, 0);
             enterPhase(PHASES.WATER);
             break;
     }
@@ -1445,7 +1724,7 @@ function setupMediaPipe() {
                 }
                 if (currentPhase === PHASES.RELEASE) {
                     const hintEl = document.getElementById('hint-text');
-                    if (hintEl) hintEl.textContent = isFinalModelVisible ? '浮金鱼影完成 · 3D 模型已现形' : GESTURE_HINTS[4];
+                    if (hintEl) hintEl.textContent = isFinalModelVisible ? '浮金鱼影完成 · 3D 模型已现形' : GESTURE_HINTS[1];
                 }
 
                 // 在全屏画布上绘制骨骼（镜像翻转）
@@ -1726,7 +2005,7 @@ function setupUI() {
         uniforms.uSize.value = parseFloat(e.target.value);
     });
     document.getElementById('ctrl-relief').addEventListener('input', e => {
-        uniforms.uRelief.value = parseFloat(e.target.value);
+        // 3D点云模式不使用 relief
     });
     document.getElementById('ctrl-fluid').addEventListener('input', e => {
         uniforms.uFluidStrength.value = parseFloat(e.target.value);
@@ -1772,11 +2051,11 @@ function setupUI() {
         });
     });
 
-    // 形态按钮
+    // 场景阶段按钮
     document.querySelectorAll('.stage-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            const idx = parseInt(btn.getAttribute('data-stage'));
-            switchToStage(idx);
+            const phase = btn.getAttribute('data-phase');
+            if (phase) enterPhase(phase);
         });
     });
 
@@ -1825,11 +2104,28 @@ function resetTimeoutDefaults() {
 }
 
 function updateUI() {
-    // 形态按钮高亮
+    // 场景阶段按钮高亮
     document.querySelectorAll('.stage-btn').forEach(btn => {
-        btn.classList.toggle('active', parseInt(btn.getAttribute('data-stage')) === currentStage);
+        btn.classList.toggle('active', btn.getAttribute('data-phase') === currentPhase);
     });
     updatePhaseIndicator();
+}
+
+// ═══════════════════════════════════════════════════════
+// Toast 提示
+// ═══════════════════════════════════════════════════════
+function showToast(msg, duration = 2000) {
+    let toast = document.getElementById('fish-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'fish-toast';
+        toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);padding:10px 24px;background:rgba(0,0,0,0.8);color:#fff;border-radius:8px;font-size:16px;z-index:9999;opacity:0;transition:opacity 0.3s;pointer-events:none;';
+        document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.opacity = '1';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, duration);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1853,10 +2149,25 @@ function onKeyDown(e) {
         }
     }
     // 数字键1-4切换阶段（调试用）
-    if (e.code === 'Digit1') enterPhase(PHASES.WATER);
-    if (e.code === 'Digit2') enterPhase(PHASES.FISHING);
-    if (e.code === 'Digit3') enterPhase(PHASES.CRAFTING);
-    if (e.code === 'Digit4') enterPhase(PHASES.RELEASE);
+    if (!e.shiftKey) {
+        if (e.code === 'Digit1') enterPhase(PHASES.WATER);
+        if (e.code === 'Digit2') enterPhase(PHASES.FISHING);
+        if (e.code === 'Digit3') enterPhase(PHASES.CRAFTING);
+        if (e.code === 'Digit4') enterPhase(PHASES.RELEASE);
+    }
+
+    // Shift+1-5 切换鱼种（隐藏快捷键）
+    if (e.shiftKey) {
+        if (e.code === 'Digit1') switchFishType(0);
+        if (e.code === 'Digit2') switchFishType(1);
+        if (e.code === 'Digit3') switchFishType(2);
+        if (e.code === 'Digit4') switchFishType(3);
+        if (e.code === 'Digit5') switchFishType(4);
+    }
+
+    // 左右方括号也可切换鱼种
+    if (e.code === 'BracketLeft')  switchFishType(currentFishIndex - 1);
+    if (e.code === 'BracketRight') switchFishType(currentFishIndex + 1);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1870,6 +2181,96 @@ function onResize() {
 }
 
 // ═══════════════════════════════════════════════════════
+// 钓鱼线 + 鱼钩 (2D线条)
+// ═══════════════════════════════════════════════════════
+function createFishingLine() {
+    if (fishingLine) { scene.remove(fishingLine); fishingLine = null; }
+    const group = new THREE.Group();
+    
+    // 鱼线：从画面顶部垂下的曲线
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xcccccc, linewidth: 1.5, transparent: true, opacity: 0.7 });
+    const lineGeo = new THREE.BufferGeometry();
+    // 初始点位，后续 animate 中动态更新
+    const pts = [];
+    for (let i = 0; i <= 20; i++) {
+        pts.push(0, 0, 0);
+    }
+    lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    const line = new THREE.Line(lineGeo, lineMat);
+    line.name = 'fishing-line';
+    group.add(line);
+    
+    // 鱼钩：简单的弯钩形状
+    const hookMat = new THREE.LineBasicMaterial({ color: 0x888888, linewidth: 2 });
+    const hookShape = new THREE.BufferGeometry();
+    const hookPts = [
+        0, 0, 0,       // 连接点
+        0, -3, 0,      // 直杆
+        1, -5, 0,      // 弯曲开始
+        2, -4.5, 0,    // 钩尖
+        1.5, -3.5, 0,  // 倒刺
+    ];
+    hookShape.setAttribute('position', new THREE.Float32BufferAttribute(hookPts, 3));
+    const hook = new THREE.Line(hookShape, hookMat);
+    hook.name = 'fishing-hook';
+    group.add(hook);
+    
+    group.visible = true;
+    scene.add(group);
+    fishingLine = group;
+}
+
+function updateFishingLine(time) {
+    if (!fishingLine) return;
+    const line = fishingLine.getObjectByName('fishing-line');
+    const hook = fishingLine.getObjectByName('fishing-hook');
+    if (!line) return;
+    
+    // 鱼线从画面上方（竿的位置）垂下到鱼钩位置
+    const rodX = 15;  // 竿在右上方
+    const rodY = 65;  // 画面顶部
+    
+    // 鱼钩终点：正常摆动 or 跟随鱼嘴位置（咬钩后）
+    let hookX, hookY;
+    if (fishingState >= FISH_STATE.BITING && fishDartCtrl) {
+        // 咬钩后鱼线连接鱼嘴（鼻子方向偏移）
+        const dir = fishDartCtrl.direction;
+        const mouthOffset = 12;
+        hookX = fishDartCtrl.pos.x + dir.x * mouthOffset;
+        hookY = fishDartCtrl.pos.y + dir.y * mouthOffset;
+    } else {
+        hookX = rodX + Math.sin(time * 0.8) * 5;
+        hookY = -10 + Math.sin(time * 0.5) * 3;
+    }
+    
+    // 挣扎时线的抖动
+    const tension = fishingState === FISH_STATE.STRUGGLING ? Math.sin(time * 12) * 3 : 0;
+    
+    // 用二次贝塞尔曲线生成鱼线点
+    const positions = line.geometry.attributes.position.array;
+    const segments = 20;
+    const ctrlX = (rodX + hookX) * 0.5 + tension;
+    const ctrlY = (rodY + hookY) * 0.5 + 10;
+    
+    for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const x = (1-t)*(1-t)*rodX + 2*(1-t)*t*ctrlX + t*t*hookX;
+        const y = (1-t)*(1-t)*rodY + 2*(1-t)*t*ctrlY + t*t*hookY;
+        positions[i*3] = x;
+        positions[i*3+1] = y;
+        positions[i*3+2] = 1;
+    }
+    line.geometry.attributes.position.needsUpdate = true;
+    
+    // 更新鱼钩位置
+    if (hook) {
+        hook.position.set(hookX, hookY, 1);
+        // 咬钩后隐藏独立鱼钩（鱼嘴含着）
+        hook.visible = fishingState < FISH_STATE.BITING;
+    }
+}
+
+// ═══════════════════════════════════════════════════════
 // 动画循环
 // ═══════════════════════════════════════════════════════
 function animate() {
@@ -1880,10 +2281,59 @@ function animate() {
 
     // 更新 uniforms
     uniforms.uTime.value = time;
-    if (finalModelMixer) finalModelMixer.update(dt);
-    if (isFinalModelVisible && finalModel) {
-        finalModel.rotation.y += dt * 0.18;
-        finalModel.position.y = Math.sin(time * 0.9) * 4;
+
+    // RELEASE 阶段：更新鱼群 boids
+    if (currentPhase === PHASES.RELEASE && fishSchool) {
+        const handPos = handData.detected
+            ? new THREE.Vector2(-handData.palmX * 100, -handData.palmY * 70)
+            : null;
+        fishSchool.update(dt, time, handPos);
+        // 鱼群气泡：随机从某条鱼尾部冒泡
+        if (bubbleSystem && Math.random() < 0.08) {
+            const randomFish = fishSchool.fishes[Math.floor(Math.random() * fishSchool.fishes.length)];
+            if (randomFish) {
+                const dir = randomFish.direction;
+                const tailX = randomFish.pos.x - dir.x * 10;
+                const tailY = randomFish.pos.y - dir.y * 10;
+                bubbleSystem.emit(tailX, tailY, 1, { sizeMin: 1.0, sizeMax: 2.5, speedUp: 10, spread: 2 });
+            }
+        }
+    }
+
+    // CRAFTING 阶段：鱼模型自身缓慢旋转展示 + 摆尾 + 浮动
+    if (currentPhase === PHASES.CRAFTING && fishMeshGroup && fishMeshGroup.visible) {
+        // 鱼自身绕Y轴缓慢旋转展示各角度（不动相机/水面）
+        fishMeshGroup.rotation.y += 0.3 * dt;
+        // 上下浮动
+        fishMeshGroup.position.y = Math.sin(time * 0.8) * 3;
+        // 更新顶点着色器（加大振幅使侧面可见）
+        if (fishSwimCtrl) {
+            fishSwimCtrl.uniforms.uSwimTime.value = time;
+            fishSwimCtrl.uniforms.uSwimSpeed.value = 2.5;
+            fishSwimCtrl.uniforms.uSwimAmp.value = 0.25;
+        }
+    }
+
+    // 鱼灯点亮仪式动画
+    if (lanternGlowing && lanternMeshGroup && lanternMeshGroup.visible) {
+        lanternGlowProgress = Math.min(1.0, lanternGlowProgress + dt * 0.4); // 约2.5秒完全点亮
+        const glow = lanternGlowProgress * lanternGlowProgress; // ease-in
+        // 鱼灯材质发光
+        lanternMeshGroup.traverse((obj) => {
+            if (obj.isMesh && obj.material && obj.material.emissive) {
+                obj.material.emissiveIntensity = glow * 0.8;
+                // 暖色调发光
+                obj.material.emissive.setRGB(1.0, 0.6, 0.2);
+            }
+        });
+        // 内部点光源
+        if (lanternPointLight) {
+            lanternPointLight.intensity = glow * 3.0;
+            // 呼吸闪烁
+            const flicker = 1.0 + Math.sin(time * 4) * 0.1 + Math.sin(time * 7) * 0.05;
+            lanternPointLight.intensity *= flicker;
+        }
+        if (lanternGlowProgress >= 1.0) lanternGlowing = false;
     }
 
     // 更新物理水波纹
@@ -1914,36 +2364,181 @@ function animate() {
         }
     }
     
-    if (currentPhase === PHASES.FISHING && particleSystem) {
-        // 钓鱼阶段：鱼作为暗影在水下左右摇摆、缓慢靠近
-        fishEmergProgress += dt * 0.15; // 很慢地浮出
-        const t = Math.min(fishEmergProgress, 1.0);
-        const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    if (currentPhase === PHASES.FISHING && fishMeshGroup && fishDartCtrl) {
+        // 钓鱼阶段状态机
+        fishMeshSwimTime += dt;
+        fishingStateTimer += dt;
+        const fadeIn = Math.min(fishMeshSwimTime * 0.5, 1.0);
+
+        // 鱼钩位置（与 updateFishingLine 保持同步）
+        const hookX = 15 + Math.sin(time * 0.8) * 5;
+        const hookY = -10 + Math.sin(time * 0.5) * 3;
+
+        switch (fishingState) {
+            case FISH_STATE.SWIMMING:
+                // 自由游动阶段，等待延时后自动靠近鱼钩
+                if (handData.detected && fadeIn > 0.5) {
+                    fishDartCtrl.attractTo(-handData.palmX * 80, -handData.palmY * 60);
+                }
+                fishDartCtrl.update(dt);
+                // 延时后自动进入靠近状态
+                if (fishingStateTimer > fishingApproachDelay) {
+                    fishingState = FISH_STATE.APPROACHING;
+                    fishingStateTimer = 0;
+                    const hintEl = document.getElementById('hint-text');
+                    if (hintEl) hintEl.textContent = '🐟 鱼发现了鱼饵...';
+                }
+                break;
+
+            case FISH_STATE.APPROACHING:
+                // 鱼自动向鱼钩方向游去
+                fishDartCtrl.attractTo(hookX, hookY);
+                fishDartCtrl.update(dt);
+                // 检测是否到达鱼钩附近（半径放宽以匹配转向弧线）
+                const distToHook = Math.hypot(fishDartCtrl.pos.x - hookX, fishDartCtrl.pos.y - hookY);
+                if (distToHook < 25) {
+                    fishingState = FISH_STATE.BITING;
+                    fishingStateTimer = 0;
+                    // 咬钩水花爆发
+                    if (splashSystem) splashSystem.burst(fishDartCtrl.pos.x, fishDartCtrl.pos.y, { count: 25, power: 60, color: [0.6, 0.9, 1.0] });
+                    // 屏幕震动
+                    document.body.style.animation = 'screenShake 0.4s ease-out';
+                    setTimeout(() => { document.body.style.animation = ''; }, 400);
+                    const hintEl = document.getElementById('hint-text');
+                    if (hintEl) hintEl.textContent = '🎣 鱼咬钩了！';
+                    showToast('🎣 鱼咬钩了！', 1500);
+                }
+                break;
+
+            case FISH_STATE.BITING:
+                // 咬钩瞬间：鱼停在钩旁，短暂停顿后进入挣扎
+                fishDartCtrl.pos.x += (hookX - fishDartCtrl.pos.x) * dt * 5;
+                fishDartCtrl.pos.y += (hookY - fishDartCtrl.pos.y) * dt * 5;
+                if (fishingStateTimer > 0.8) {
+                    fishingState = FISH_STATE.STRUGGLING;
+                    fishingStateTimer = 0;
+                    fishingStruggleCount = 0;
+                    const hintEl = document.getElementById('hint-text');
+                    if (hintEl) hintEl.textContent = '💪 鱼在挣扎！保持住...';
+                }
+                break;
+
+            case FISH_STATE.STRUGGLING:
+                // 鱼在鱼钩附近剧烈挣扎（左右猛甩 + 向下拉扯）
+                const struggleAmp = 15 * Math.max(0.3, 1 - fishingStateTimer * 0.15);
+                const struggleFreq = 8 + fishingStruggleCount * 0.5;
+                fishDartCtrl.pos.x = hookX + Math.sin(time * struggleFreq) * struggleAmp;
+                fishDartCtrl.pos.y = hookY - 5 + Math.sin(time * struggleFreq * 1.3) * (struggleAmp * 0.5);
+                fishDartCtrl.heading = Math.sin(time * struggleFreq) * 0.8; // 头部猛甩
+                fishingStruggleCount++;
+                // 轻微持续屏幕抖动
+                if (Math.random() < 0.1) {
+                    document.body.style.transform = `translate(${(Math.random()-0.5)*3}px, ${(Math.random()-0.5)*2}px)`;
+                    setTimeout(() => { document.body.style.transform = ''; }, 50);
+                }
+                // 挣扎4秒后鱼力竭，被钓上
+                if (fishingStateTimer > 4.0) {
+                    fishingState = FISH_STATE.CAUGHT;
+                    fishingStateTimer = 0;
+                    // 被钓起时大水花
+                    if (splashSystem) splashSystem.burst(fishDartCtrl.pos.x, fishDartCtrl.pos.y, { count: 35, power: 90, color: [0.7, 0.95, 1.0] });
+                    const hintEl = document.getElementById('hint-text');
+                    if (hintEl) hintEl.textContent = '🏆 成功钓到了！';
+                    showToast(`🏆 钓到了 ${FISH_TYPES[currentFishIndex].name}！`, 2500);
+                    document.body.style.transform = '';
+                }
+                break;
+
+            case FISH_STATE.CAUGHT:
+                // 鱼被钓上：向上收线动画
+                fishDartCtrl.pos.y += 40 * dt; // 向上拉
+                fishDartCtrl.heading = Math.PI / 2; // 头朝上
+                // 1.5秒后自动进入制灯阶段
+                if (fishingStateTimer > 1.5) {
+                    advancePhase();
+                }
+                break;
+        }
+
+        // 非SWIMMING/APPROACHING状态下手动改了heading，需同步3D朝向
+        if (fishingState >= FISH_STATE.BITING) {
+            const pitchVal = fishingState === FISH_STATE.CAUGHT ? 0.3 : 0;
+            // 方向强制XY平面（纯侧影）
+            fishDartCtrl.direction.set(
+                Math.cos(fishDartCtrl.heading),
+                Math.sin(fishDartCtrl.heading) * 0.4 + pitchVal,
+                0
+            ).normalize();
+            // matrix-based quaternion（鱼背朝上）
+            const _right = new THREE.Vector3();
+            const _corrUp = new THREE.Vector3();
+            const _mat = new THREE.Matrix4();
+            const _wUp = new THREE.Vector3(0, 1, 0);
+            _right.crossVectors(_wUp, fishDartCtrl.direction);
+            if (_right.lengthSq() < 0.001) _right.set(0, 0, -1);
+            _right.normalize();
+            _corrUp.crossVectors(fishDartCtrl.direction, _right).normalize();
+            _mat.makeBasis(_right, _corrUp, fishDartCtrl.direction);
+            fishDartCtrl.quaternion.setFromRotationMatrix(_mat);
+        }
+
+        // 应用位置（3D）
+        fishMeshGroup.position.x = fishDartCtrl.pos.x;
+        fishMeshGroup.position.y = fishDartCtrl.pos.y;
+        fishMeshGroup.position.z = fishDartCtrl.pos.z;
+
+        // 身体摇摆（S-wave尾部振动）：振幅与速度联动，挣扎时更剧烈
+        const speedRatio = fishDartCtrl.speed / 150;
+        const wiggleBase = fishingState === FISH_STATE.STRUGGLING ? 0.35 : (0.04 + speedRatio * 0.08);
+        const wiggleFreq = 3.0 + speedRatio * 2.5;
+        const swimWiggle = Math.sin(time * wiggleFreq) * wiggleBase;
         
-        // 鱼影从水底慢慢浮起 (-80 → -40)，不完全出水
-        particleSystem.scale.setScalar(0.2 + ease * 0.45);
-        particleSystem.position.y = -80 + ease * 40;
-        
-        // 左右摇摆游动
-        particleSystem.position.x = Math.sin(time * 1.2) * (30 - ease * 15);
-        // 轻微旋转模拟鱼摆尾
-        particleSystem.rotation.z = Math.sin(time * 2.5) * 0.12;
-        particleSystem.rotation.y = Math.sin(time * 1.2) * 0.2;
-        
-        // 若有手势，鱼游向手掌方向（被吸引）
-        if (handData.detected) {
-            const tx = -handData.palmX * 40;
-            particleSystem.position.x += (tx - particleSystem.position.x) * 0.02;
+        // 3D朝向：使用四元数，鱼鼻子对准速度方向
+        fishMeshGroup.quaternion.copy(fishDartCtrl.quaternion);
+        // 叠加局部Y轴摆尾
+        fishMeshGroup.rotateY(swimWiggle);
+
+        // 更新顶点着色器时间（如果注入成功）
+        if (fishSwimCtrl) {
+            fishSwimCtrl.uniforms.uSwimTime.value = time;
+            fishSwimCtrl.uniforms.uSwimSpeed.value = 2.0 + speedRatio * 3.0;
+            fishSwimCtrl.uniforms.uSwimAmp.value = 0.12 + speedRatio * 0.15;
+        }
+
+        // 鱼鳞微光：转弯时鳞片反光闪烁
+        const bank = fishDartCtrl.bankAngle || 0;
+        const shimmerStrength = Math.abs(bank) * 2.0 + speedRatio * 0.3;
+        const sparkle = Math.max(0, Math.sin(time * 8 + Math.sin(time * 3) * 2)) * shimmerStrength;
+        fishMeshGroup.traverse((obj) => {
+            if (obj.isMesh && obj.material && obj.material.emissive) {
+                obj.material.emissiveIntensity = 0.05 + sparkle * 0.4;
+            }
+        });
+
+        // 渐入透明度
+        if (fadeIn < 1.0) {
+            fishMeshGroup.traverse((obj) => {
+                if (obj.isMesh && obj.material) {
+                    obj.material.transparent = true;
+                    obj.material.opacity = fadeIn;
+                }
+            });
         }
         
-        // 低透明度 = 水下暗影效果（通过 tint 实现）
-        uniforms.uTintColor.value.set(0.15, 0.25, 0.4); // 深蓝暗影色
-        uniforms.uTintStrength.value = 1.0 - ease * 0.6; // 越靠近越清晰
-        
-        // 更新提示
-        if (ease > 0.6) {
-            const hintEl = document.getElementById('hint-text');
-            if (hintEl) hintEl.textContent = '✨ 鱼靠近了！捏合手指抓住它！';
+        // 更新钓鱼线动画
+        updateFishingLine(time);
+
+        // 气泡：从鱼尾部定期释放
+        if (bubbleSystem && Math.random() < 0.15) {
+            const tailOffset = 15;
+            const dir = fishDartCtrl.direction;
+            const tailX = fishDartCtrl.pos.x - dir.x * tailOffset;
+            const tailY = fishDartCtrl.pos.y - dir.y * tailOffset;
+            bubbleSystem.emit(tailX, tailY, 1, { sizeMin: 1.0, sizeMax: 3.0, speedUp: 12, spread: 3 });
+        }
+        // 水花：挣扎时持续溅水
+        if (splashSystem && fishingState === FISH_STATE.STRUGGLING && Math.random() < 0.3) {
+            splashSystem.burst(fishDartCtrl.pos.x, fishDartCtrl.pos.y, { count: 3, power: 50 });
         }
     }
 
@@ -1961,12 +2556,7 @@ function animate() {
                 }
             }
         } else if (currentPhase === PHASES.RELEASE) {
-            ritualTimeoutTimer += dt;
-            const limit = RITUAL_TIMEOUTS[4] ?? 0;
-            if (limit > 0 && ritualTimeoutTimer >= limit) {
-                ritualTimeoutTimer = 0;
-                triggerRitualGesture('release');
-            }
+            // 放生阶段不需要超时自动推进，鱼群持续游动直到用户手势结束
         }
     }
 
@@ -1977,8 +2567,18 @@ function animate() {
             morphProgress = 1.0;
             isMorphing = false;
             // morph 结束后，A 变成 B
-            uniforms.uTexA.value = uniforms.uTexB.value;
+            uniforms.uPosA.value = uniforms.uPosB.value;
+            uniforms.uColA.value = uniforms.uColB.value;
             uniforms.uMorph.value = 0.0;
+            // 移除背景暗化
+            morphOverlay.style.opacity = '0';
+            // TD粒子变形结束：隐藏粒子，显示目标GLB
+            if (particleSystem) particleSystem.visible = false;
+            if (currentStage === 1 && lanternMeshGroup) {
+                showLanternModel();
+            } else if (currentStage === 0 && fishMeshGroup) {
+                fishMeshGroup.visible = true;
+            }
         } else {
             // 使用 ease-in-out
             const t = morphProgress;
@@ -2109,12 +2709,25 @@ function animate() {
     }
 
     controls.update();
+
+    // 更新水下特效
+    if (bubbleSystem) bubbleSystem.update(dt);
+    if (splashSystem) splashSystem.update(dt);
+    if (causticsEffect) {
+        causticsEffect.update(time);
+        // 焦散面始终面对相机（不跟随场景旋转）
+        causticsEffect.mesh.quaternion.copy(camera.quaternion);
+        // 焦散在钓鱼和放生阶段更明显
+        const targetIntensity = (currentPhase === PHASES.FISHING || currentPhase === PHASES.RELEASE) ? 0.85 : 0.4;
+        causticsEffect.uniforms.uIntensity.value += (targetIntensity - causticsEffect.uniforms.uIntensity.value) * 0.02;
+    }
     
     // 渲染顺序：先水波纹背景（屏幕空间），再3D场景叠加
     if (rippleScene && rippleCamera) {
         renderer.autoClear = true;
         renderer.render(rippleScene, rippleCamera);
         renderer.autoClear = false;
+        renderer.clearDepth(); // 清除深度缓冲，确保3D场景（含焦散）不被背景遮挡
         renderer.render(scene, camera);
         renderer.autoClear = true;
     } else {

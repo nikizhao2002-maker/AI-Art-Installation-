@@ -1,0 +1,482 @@
+简单的粒子点云效果网站代码
+ <!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CULTURAL HERITAGE v16.0 | PARTICLE SYSTEM</title>
+    <!-- 字体资源 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* --- 核心复位与视口锁定 --- */
+        :root {
+            --gold: #d4af37;
+            --dark-gold: #8a6e2f;
+            --black: #050505;
+            --glass: rgba(10, 10, 10, 0.85);
+        }
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* 禁止溢出滚动 */
+            background-color: var(--black);
+            font-family: 'Orbitron', sans-serif;
+            color: var(--gold);
+            touch-action: none; /* 禁止移动端默认触摸行为 */
+        }
+        /* --- WebGL Canvas --- */
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+        }
+        /* --- UI 层: 黑金赛博风格 --- */
+        #ui-layer {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            pointer-events: none; /* 让鼠标穿透到 Canvas */
+            display: flex;
+            justify-content: space-between;
+        }
+        /* --- 左侧信息 --- */
+        .info-panel {
+            padding: 40px;
+            pointer-events: auto;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            text-shadow: 0 0 10px rgba(212, 175, 55, 0.5);
+        }
+        h1 {
+            font-size: 2rem;
+            margin: 0;
+            letter-spacing: 2px;
+            border-left: 4px solid var(--gold);
+            padding-left: 15px;
+        }
+        .sub-title {
+            font-family: 'Ma Shan Zheng', cursive;
+            font-size: 1.5rem;
+            opacity: 0.8;
+            margin-top: 5px;
+        }
+        .upload-btn {
+            margin-top: 20px;
+            background: transparent;
+            border: 1px solid var(--gold);
+            color: var(--gold);
+            padding: 10px 20px;
+            font-family: 'Orbitron', sans-serif;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            width: fit-content;
+        }
+        .upload-btn:hover {
+            background: var(--gold);
+            color: var(--black);
+            box-shadow: 0 0 15px var(--gold);
+        }
+        /* --- 右侧滚动列表 (竖排版) --- */
+        .scroll-list {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 100px;
+            background: linear-gradient(to left, rgba(0,0,0,0.9), transparent);
+            pointer-events: auto;
+            overflow-y: auto;
+            overscroll-behavior: contain; /* 滚动隔离 */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 20px;
+            scrollbar-width: none; /* Firefox 隐藏滚动条 */
+        }
+        .scroll-list::-webkit-scrollbar {
+            display: none; /* Chrome/Safari 隐藏滚动条 */
+        }
+        .list-item {
+            writing-mode: vertical-rl;
+            text-orientation: upright;
+            font-family: 'Ma Shan Zheng', cursive;
+            font-size: 1.2rem;
+            color: var(--gold);
+            margin: 20px 0;
+            padding: 10px;
+            cursor: pointer;
+            opacity: 0.5;
+            transition: all 0.3s;
+            border-right: 2px solid transparent;
+            letter-spacing: 5px;
+        }
+        .list-item:hover, .list-item.active {
+            opacity: 1;
+            border-right: 2px solid var(--gold);
+            text-shadow: 0 0 8px var(--gold);
+        }
+        .item-en {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.6rem;
+            margin-right: 5px;
+            opacity: 0.7;
+            writing-mode: vertical-rl;
+            transform: rotate(180deg); /* 修正英文方向 */
+        }
+        /* --- 隐藏的文件输入 --- */
+        #file-input {
+            display: none;
+        }
+        /* --- Loading --- */
+        #loader {
+            position: fixed;
+            inset: 0;
+            background: var(--black);
+            z-index: 100;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: var(--gold);
+            font-size: 1.5rem;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loader">SYSTEM INITIALIZING...</div>
+    <!-- WebGL Container -->
+    <div id="canvas-container"></div>
+    <!-- UI Overlay -->
+    <div id="ui-layer">
+        <div class="info-panel">
+            <h1>CULTURAL HERITAGE</h1>
+            <div class="sub-title">粒子效果线上展馆 v16.0</div>
+            <div style="font-size: 0.7rem; margin-top: 10px; opacity: 0.6;">
+                PARTICLE MATRIX: 65,536 UNITS<br>
+                RENDER MODE: VOLUMETRIC POINT CLOUD
+            </div>
+            <button class="upload-btn" onclick="document.getElementById('file-input').click()">
+                [ Upload Image / 上传影像 ]
+            </button>
+            <input type="file" id="file-input" accept="image/*">
+        </div>
+        <div class="scroll-list" id="content-list">
+            <!-- 列表项将由 JS 生成 -->
+        </div>
+    </div>
+    <!-- Import Maps (Three.js & Lil-GUI) -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "lil-gui": "https://unpkg.com/lil-gui@0.19.1/dist/lil-gui.esm.min.js"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import GUI from 'lil-gui';
+        // --- Configuration ---
+        const CONFIG = {
+            particleCount: 256, // 256x256 = 65,536 particles
+            pointSize: 2.0,
+            bgColor: 0x050505,
+            defaultImage: 'https://images.unsplash.com/photo-1543783256-4b6c23cb365b?q=80&w=2000&auto=format&fit=crop' // 默认占位图 (瓷器/纹理)
+        };
+        const DATA_LIST = [
+            { cn: "1", en: "MARTIAL ARTS" },
+            { cn: "2", en: "TCM" },
+            { cn: "3", en: "PEKING OPERA" },
+            { cn: "4", en: "TEA CEREMONY" },
+            { cn: "5", en: "PORCELAIN" },
+            { cn: "6", en: "HANFU" },
+            { cn: "7", en: "GO" },
+            { cn: "8", en: "PAPER CUTTING" },
+            { cn: "9", en: "EMBROIDERY" }
+        ];
+        // --- Global Variables ---
+        let scene, camera, renderer, controls, particleSystem;
+        let uniforms;
+        const clock = new THREE.Clock();
+        // --- Shader Definitions (GLSL) ---
+        // Vertex Shader: 处理位置、呼吸、浮雕、爆炸
+        const vertexShader = `
+            uniform float uTime;
+            uniform float uRelief;      // 3D浮雕强度
+            uniform float uSize;        // 粒子大小
+            uniform sampler2D uTexture; // 图像纹理
+            // 动态控制
+            uniform float uHeartbeatAmp;
+            uniform float uHeartbeatSpeed;
+            uniform float uFluidStrength;
+            varying vec2 vUv;
+            varying float vLuma;
+            // 简单的随机函数
+            float random(vec2 st) {
+                return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+            }
+            void main() {
+                vUv = uv;
+                // 采样颜色计算亮度
+                vec4 texColor = texture2D(uTexture, uv);
+                float luma = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
+                vLuma = luma;
+                vec3 pos = position;
+                // 1. 3D Relief (基于亮度沿Z轴位移)
+                pos.z += luma * uRelief;
+                // 2. Fluid / Scatter (基于噪波的流动效果)
+                float noise = sin(pos.y * 10.0 + uTime * 2.0) * cos(pos.x * 10.0 + uTime);
+                pos.x += noise * uFluidStrength * (1.0 - luma); // 暗部动得更多
+                pos.y += noise * uFluidStrength * 0.5;
+                // 3. Heartbeat (整体呼吸)
+                float breath = 1.0 + sin(uTime * uHeartbeatSpeed) * uHeartbeatAmp;
+                pos *= breath;
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                // 粒子大小随距离衰减
+                gl_PointSize = uSize * (300.0 / -mvPosition.z);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+        // Fragment Shader: 处理颜色、抠图、调色
+        const fragmentShader = `
+            uniform sampler2D uTexture;
+            uniform float uThreshold;   // 去黑阈值
+            // 调色板
+            uniform float uBrightness;
+            uniform float uContrast;
+            uniform float uTemperature; // 色温 (-1 blue to 1 orange)
+            uniform float uTint;        // 色调 (-1 green to 1 magenta)
+            varying vec2 vUv;
+            varying float vLuma;
+            void main() {
+                vec4 color = texture2D(uTexture, vUv);
+                // 1. Smart Luma Key (去黑)
+                if (vLuma < uThreshold) {
+                    discard;
+                }
+                // 2. 圆形粒子裁切 (可选，让粒子变成圆点)
+                vec2 coord = gl_PointCoord - vec2(0.5);
+                if(length(coord) > 0.5) discard;
+                // 3. Color Grading Pipeline
+                vec3 rgb = color.rgb;
+                // Contrast
+                rgb = (rgb - 0.5) * uContrast + 0.5;
+                // Brightness
+                rgb = rgb + uBrightness;
+                // Temperature (简易算法: R增加B减少)
+                rgb.r += uTemperature * 0.1;
+                rgb.b -= uTemperature * 0.1;
+                // Tint (G减少)
+                rgb.g -= uTint * 0.1;
+                // 增强金色感 (Cyberpunk Gold Overlay)
+                // 基于亮度的着色，高光偏金
+                vec3 gold = vec3(0.83, 0.68, 0.21);
+                rgb = mix(rgb, gold, vLuma * 0.2);
+                gl_FragColor = vec4(rgb, 1.0);
+            }
+        `;
+        // --- Initialization ---
+        function init() {
+            // Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(CONFIG.bgColor);
+            // 简单的环境雾
+            scene.fog = new THREE.FogExp2(CONFIG.bgColor, 0.002);
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 0, 180);
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 性能优化
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+            // Controls (Orbit Cruise)
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.5;
+            controls.enablePan = false;
+            controls.minDistance = 50;
+            controls.maxDistance = 300;
+            // Build Particles
+            createParticleSystem();
+            // Build UI
+            buildList();
+            setupGUI();
+            setupInteraction();
+            // Remove Loader
+            setTimeout(() => {
+                document.getElementById('loader').style.opacity = 0;
+                setTimeout(() => document.getElementById('loader').remove(), 500);
+            }, 1000);
+            // Start Loop
+            animate();
+        }
+        function createParticleSystem() {
+            const count = CONFIG.particleCount; // 256
+            const numParticles = count * count;
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(numParticles * 3);
+            const uvs = new Float32Array(numParticles * 2);
+            // 生成网格
+            let i = 0;
+            for (let y = 0; y < count; y++) {
+                for (let x = 0; x < count; x++) {
+                    // Normalize -0.5 to 0.5
+                    const u = x / count;
+                    const v = y / count;
+                    // Centered grid
+                    const px = (u - 0.5) * 200; // 宽度缩放
+                    const py = (v - 0.5) * 200; // 高度缩放
+                    const pz = 0;
+                    positions[i * 3] = px;
+                    positions[i * 3 + 1] = py;
+                    positions[i * 3 + 2] = pz;
+                    uvs[i * 2] = u;
+                    uvs[i * 2 + 1] = v;
+                    i++;
+                }
+            }
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+            // Load Initial Texture
+            const textureLoader = new THREE.TextureLoader();
+            const initialTexture = textureLoader.load(CONFIG.defaultImage);
+            // Uniforms setup
+            uniforms = {
+                uTime: { value: 0 },
+                uTexture: { value: initialTexture },
+                uSize: { value: CONFIG.pointSize },
+                // Visual / Keying
+                uThreshold: { value: 0.1 },
+                uRelief: { value: 30.0 },
+                // Color
+                uBrightness: { value: 0.0 },
+                uContrast: { value: 1.1 },
+                uTemperature: { value: 0.0 },
+                uTint: { value: 0.0 },
+                // Dynamics
+                uHeartbeatAmp: { value: 0.0 },
+                uHeartbeatSpeed: { value: 2.0 },
+                uFluidStrength: { value: 0.0 }
+            };
+            const material = new THREE.ShaderMaterial({
+                uniforms: uniforms,
+                vertexShader: vertexShader,
+                fragmentShader: fragmentShader,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending // 赛博朋克发光感
+            });
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+        }
+        function buildList() {
+            const listContainer = document.getElementById('content-list');
+            DATA_LIST.forEach(item => {
+                const el = document.createElement('div');
+                el.className = 'list-item';
+                el.innerHTML = `
+                    <span class="item-en">${item.en}</span>
+                    <span>${item.cn}</span>
+                `;
+                el.onclick = () => {
+                    // 模拟切换内容的视觉反馈
+                    document.querySelectorAll('.list-item').forEach(d => d.classList.remove('active'));
+                    el.classList.add('active');
+                    console.log(`Switching to category: ${item.cn}`);
+                    // 此处在实际项目中会请求后端获取该分类的图，这里仅做交互演示
+                    triggerGlitchEffect();
+                };
+                listContainer.appendChild(el);
+            });
+        }
+        function triggerGlitchEffect() {
+            // 简单的切换故障效果
+            const originalAmp = uniforms.uFluidStrength.value;
+            uniforms.uFluidStrength.value = 5.0; // 瞬间爆炸
+            setTimeout(() => {
+                const interval = setInterval(() => {
+                    uniforms.uFluidStrength.value *= 0.9;
+                    if(uniforms.uFluidStrength.value <= originalAmp + 0.1) {
+                        uniforms.uFluidStrength.value = originalAmp;
+                        clearInterval(interval);
+                    }
+                }, 16);
+            }, 100);
+        }
+        function setupGUI() {
+            const gui = new GUI({ title: 'CONTROL PANEL' });
+            gui.domElement.style.marginTop = "60px"; // 避开标题
+            // 视觉控制 (Visual)
+            const folderVisual = gui.addFolder('Visual & Color');
+            folderVisual.add(uniforms.uSize, 'value', 0.1, 10.0).name('Particle Size');
+            folderVisual.add(uniforms.uThreshold, 'value', 0.0, 0.5).name('Luma Cutoff'); // 去黑阈值
+            folderVisual.add(uniforms.uRelief, 'value', 0.0, 100.0).name('3D Relief'); // 浮雕
+            // 调色板 (Palette)
+            folderVisual.add(uniforms.uBrightness, 'value', -0.5, 0.5).name('Brightness');
+            folderVisual.add(uniforms.uContrast, 'value', 0.5, 2.0).name('Contrast');
+            folderVisual.add(uniforms.uTemperature, 'value', -1.0, 1.0).name('Temp (K)');
+            folderVisual.add(uniforms.uTint, 'value', -1.0, 1.0).name('Tint');
+            // 动态 (Dynamics)
+            const folderDynamics = gui.addFolder('Dynamics');
+            folderDynamics.add(uniforms.uHeartbeatAmp, 'value', 0.0, 0.5).name('Breath Amp');
+            folderDynamics.add(uniforms.uHeartbeatSpeed, 'value', 0.1, 10.0).name('Breath Spd');
+            folderDynamics.add(uniforms.uFluidStrength, 'value', 0.0, 10.0).name('Fluid Chaos');
+            // 摄像机
+            const folderCam = gui.addFolder('Camera');
+            folderCam.add(controls, 'autoRotate').name('Orbit Cruise');
+            folderCam.add(controls, 'autoRotateSpeed', 0.1, 5.0).name('Cruise Speed');
+            gui.close(); // 默认折叠，保持界面整洁
+        }
+        function setupInteraction() {
+            // 文件上传逻辑
+            const fileInput = document.getElementById('file-input');
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        // 更新纹理
+                        const newTexture = new THREE.Texture(img);
+                        newTexture.needsUpdate = true;
+                        uniforms.uTexture.value = newTexture;
+                        triggerGlitchEffect(); // 触发切换特效
+                    };
+                };
+                reader.readAsDataURL(file);
+            });
+            // 窗口大小调整
+            window.addEventListener('resize', onWindowResize, false);
+        }
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        function animate() {
+            requestAnimationFrame(animate);
+            const elapsedTime = clock.getElapsedTime();
+            uniforms.uTime.value = elapsedTime;
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        // Run
+        init();
+    </script>
+</body>
+</html>

@@ -95,7 +95,7 @@
             <div class="panel-body" id="panel-body">
                 <div class="control-group timeout-group">
                     <label>粒子大小</label>
-                    <input type="range" id="ctrl-size" min="0.5" max="8" step="0.1" value="2.5">
+                    <input type="range" id="ctrl-size" min="0.5" max="8" step="0.1" value="4.5">
                 </div>
                 <div class="control-group">
                     <label>3D 浮雕深度</label>
@@ -111,7 +111,7 @@
                 </div>
                 <div class="control-group">
                     <label>背景亮度去除</label>
-                    <input type="range" id="ctrl-threshold" min="0" max="0.95" step="0.01" value="0.85">
+                    <input type="range" id="ctrl-threshold" min="0" max="0.5" step="0.01" value="0.2">
                 </div>
 
                 <div class="control-group">
@@ -173,14 +173,12 @@
                 </div>
 
                 <div class="control-group">
-                    <label>形态阶段</label>
+                    <label>场景阶段</label>
                     <div class="stage-buttons" id="stage-buttons">
-                        <button class="stage-btn active" data-stage="0">活鱼</button>
-                        <button class="stage-btn" data-stage="1">骨架</button>
-                        <button class="stage-btn" data-stage="2">糊纸</button>
-                        <button class="stage-btn" data-stage="3">上色</button>
-                        <button class="stage-btn" data-stage="4">鱼灯</button>
-                        <button class="stage-btn special" data-stage="5">🏮 鱼灯群</button>
+                        <button class="stage-btn active" data-phase="water">💧 水面</button>
+                        <button class="stage-btn" data-phase="fishing">🎣 钓鱼</button>
+                        <button class="stage-btn" data-phase="crafting">🏮 制灯</button>
+                        <button class="stage-btn" data-phase="release">🐟 放生</button>
                     </div>
                 </div>
 
