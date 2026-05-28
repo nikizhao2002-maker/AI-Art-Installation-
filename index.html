@@ -64,6 +64,20 @@
 
     <!-- UI 覆盖层 -->
     <div id="ui-overlay">
+        <!-- 顶部仪式手势提示 -->
+        <div id="ritual-cue" class="ritual-cue is-hidden" aria-live="polite">
+            <div class="ritual-copy">
+                <div class="ritual-kicker" id="ritual-kicker">下一步手势</div>
+                <div class="ritual-title" id="ritual-title">伸出手掌，唤醒水面</div>
+                <div class="ritual-subtitle" id="ritual-subtitle">动作放慢一点，系统会跟随你的手势。</div>
+            </div>
+            <div class="ritual-gesture" id="ritual-gesture" aria-hidden="true">
+                <span class="hand hand-left">✋</span>
+                <span class="hand hand-right">✋</span>
+                <span class="motion-line"></span>
+            </div>
+        </div>
+
         <!-- 左下角信息 -->
         <div class="info-panel">
             <h1>钓一盏鱼灯</h1>
@@ -79,7 +93,7 @@
             </div>
             
             <div class="panel-body" id="panel-body">
-                <div class="control-group">
+                <div class="control-group timeout-group">
                     <label>粒子大小</label>
                     <input type="range" id="ctrl-size" min="0.5" max="8" step="0.1" value="2.5">
                 </div>
@@ -98,6 +112,40 @@
                 <div class="control-group">
                     <label>背景亮度去除</label>
                     <input type="range" id="ctrl-threshold" min="0" max="0.95" step="0.01" value="0.85">
+                </div>
+
+                <div class="control-group">
+                    <div class="control-group-header">
+                        <label>手势超时 (秒)</label>
+                        <button class="reset-btn" id="reset-defaults">重置默认值</button>
+                    </div>
+                    <div class="timeout-grid">
+                        <div class="timeout-item">
+                            <span class="timeout-label">展开骨架</span>
+                            <input type="range" id="ctrl-timeout-0" min="6" max="30" step="1" value="12">
+                            <span class="timeout-value" id="timeout-val-0">12s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">糊纸覆面</span>
+                            <input type="range" id="ctrl-timeout-1" min="6" max="30" step="1" value="15">
+                            <span class="timeout-value" id="timeout-val-1">15s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">着色描鳞</span>
+                            <input type="range" id="ctrl-timeout-2" min="6" max="30" step="1" value="18">
+                            <span class="timeout-value" id="timeout-val-2">18s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">点亮鱼灯</span>
+                            <input type="range" id="ctrl-timeout-3" min="6" max="30" step="1" value="18">
+                            <span class="timeout-value" id="timeout-val-3">18s</span>
+                        </div>
+                        <div class="timeout-item">
+                            <span class="timeout-label">放生回水</span>
+                            <input type="range" id="ctrl-timeout-4" min="6" max="30" step="1" value="15">
+                            <span class="timeout-value" id="timeout-val-4">15s</span>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="control-group">
@@ -141,13 +189,24 @@
                     <div class="gesture-list">
                         <div class="gesture-item">👆 <span>指尖触碰 → 水波纹 · 引鱼</span></div>
                         <div class="gesture-item">🤏 <span>捏合 → 抓鱼 / 回到水面</span></div>
-                        <div class="gesture-item">👋 <span>左右挥手 → 切换形态(右→/左←)</span></div>
-                        <div class="gesture-item">🖐️ <span>张开手掌 → 粒子/鱼灯散开</span></div>
-                        <div class="gesture-item">✊ <span>握拳 → 粒子吸引跟随 / 鱼灯追随</span></div>
+                        <div class="gesture-item">↔ <span>双手推开 → 展开竹骨</span></div>
+                        <div class="gesture-item">☞ <span>左至右抹过 → 糊纸覆面</span></div>
+                        <div class="gesture-item">✊ <span>握拳再张开 → 着色描鳞</span></div>
+                        <div class="gesture-item">🙌 <span>张手靠拢上托 → 点亮鱼灯</span></div>
+                        <div class="gesture-item">🖐️ <span>张手上抬 → 放生回水面</span></div>
                         <div class="gesture-item">🖱️ <span>左键旋转 · 右键水波纹</span></div>
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- 制灯阶段进度指示（仅CRAFTING阶段显示） -->
+        <div id="gesture-progress" style="display:none;">
+            <div class="gesture-step" data-step="0" title="活鱼"></div>
+            <div class="gesture-step" data-step="1" title="骨架"></div>
+            <div class="gesture-step" data-step="2" title="糊纸"></div>
+            <div class="gesture-step" data-step="3" title="上色"></div>
+            <div class="gesture-step" data-step="4" title="鱼灯"></div>
         </div>
 
         <!-- 底部阶段指示 -->
